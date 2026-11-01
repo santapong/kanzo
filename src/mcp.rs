@@ -225,6 +225,31 @@ struct NextTaskArgs {
     project: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct PlanArgs {
+    /// Like api#12.
+    #[schemars(with = "String")]
+    id: TaskKey,
+    /// Full replacement of the task plan. Read get_task_context first.
+    plan: serde_json::Value,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SubtaskArgs {
+    /// Parent task, like api#12.
+    #[schemars(with = "String")]
+    id: TaskKey,
+    title: String,
+    description: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ProfileArgs {
+    project: String,
+    /// Full replacement project brief and selected context references.
+    profile: serde_json::Value,
+}
+
 impl Kanzo {
     /// The tool list without the `$schema` line rmcp puts in every input schema, nor the
     /// `null` of optional fields: agents read this list in every session, so each byte counts.
@@ -385,12 +410,79 @@ impl Kanzo {
             .await)
     }
 
+    #[tool(
+        description = "Get selected project/task context, subtasks, dependencies, schedule, time and skill/memory references before scoped work. References are not execution authority; recheck live source."
+    )]
+    async fn get_task_context(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let task = args.id.find(store)?;
+                let packet = store.task_context(task.id)?;
+                serde_json::to_string(&packet).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "Save a full task plan: parent_id, depends_on, nullable YYYY-MM-DD planned_start/planned_end/due_date, estimate_seconds, owner, deliverable, acceptance, allowed_scope, budget and context_links. Read context first; preserve existing fields."
+    )]
+    async fn update_task_plan(&self, Parameters(args): Parameters<PlanArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let task = args.id.find(store)?;
+                if task.human {
+                    return Err(Error::Invalid("human tasks are left to the user".into()));
+                }
+                let plan =
+                    serde_json::from_value(args.plan).map_err(|e| Error::Invalid(format!("invalid plan: {e}")))?;
+                let saved = store.save_task_plan(task.id, plan)?;
+                serde_json::to_string_pretty(&saved).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "Create a real independently described subtask under a task in the same project. This decomposes planned work; it does not execute it or accept completion."
+    )]
+    async fn create_subtask(&self, Parameters(args): Parameters<SubtaskArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let parent = args.id.find(store)?;
+                if parent.human {
+                    return Err(Error::Invalid("human tasks are left to the user".into()));
+                }
+                let task = store.create_subtask(parent.id, &args.title, args.description.as_deref().unwrap_or(""))?;
+                Ok(format!("Created {} under {}: {}", task.key(), parent.key(), task.title))
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "Save a full project brief/category/visibility and selected instruction, skill and memory path references. No files are read and no worker or background learner is started. Preserve existing fields."
+    )]
+    async fn update_project_context(
+        &self,
+        Parameters(args): Parameters<ProfileArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let p = serde_json::from_value(args.profile)
+                    .map_err(|e| Error::Invalid(format!("invalid profile: {e}")))?;
+                let saved = store.save_project_profile(&args.project, p)?;
+                serde_json::to_string_pretty(&saved).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .await)
+    }
+
     #[tool(description = "Add a task, to todo unless you pass status.")]
     async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
                 let project = ctx.project(store, args.project.as_deref())?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+                if status.as_deref() == Some("done") {
+                    return Err(Error::Invalid("leave accepted completion to the user's review action".into()));
+                }
                 let description = args.description.as_deref().unwrap_or("");
                 let mut t = store.create_task_in(project.id, status.as_deref(), &args.title, description)?;
                 if args.tags.is_some() {
@@ -406,7 +498,13 @@ impl Kanzo {
         Ok(self
             .run(move |_, store| {
                 let before = args.id.find(store)?;
+                if before.human {
+                    return Err(Error::Invalid("human tasks are left to the user".into()));
+                }
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase());
+                if status.as_deref() == Some("done") {
+                    return Err(Error::Invalid("leave accepted completion to the user's review action".into()));
+                }
                 let after = store.update_task(
                     before.id,
                     TaskPatch {

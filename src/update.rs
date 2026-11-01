@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Where releases are published; `KANZO_RELEASES_URL` points elsewhere, for tests.
-const RELEASES: &str = "https://github.com/emanuele-em/kanzo/releases/latest/download";
+const RELEASES: &str = "https://github.com/santapong/kanzo/releases/latest/download";
 
 /// How long a check for the latest version is reused: the board checks once a day.
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);

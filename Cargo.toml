@@ -1,12 +1,12 @@
 [package]
 name = "kanzo"
-version = "0.2.1"
+version = "0.3.0-harness.1"
 edition = "2024"
 rust-version = "1.89"
-description = "Self-hosted kanban for humans and agents. One 4 MB binary, starts in 2 ms, zero setup."
+description = "Local portfolio planning, schedules, time tracking and task context for humans and coding agents."
 license = "AGPL-3.0-only"
-repository = "https://github.com/emanuele-em/kanzo"
-homepage = "https://github.com/emanuele-em/kanzo"
+repository = "https://github.com/santapong/kanzo"
+homepage = "https://github.com/santapong/kanzo"
 readme = "README.md"
 keywords = ["kanban", "mcp", "agents", "todo", "claude"]
 categories = ["command-line-utilities", "development-tools"]
@@ -22,7 +22,7 @@ dirs = "7.0.0"
 # Already built in by other crates; tells which lock errors mean "no locks here".
 libc = "0.2.191"
 rmcp = { version = "=3.7.0", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
-rusqlite = { version = "0.41.0", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled", "functions"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

@@ -1,3 +1,23 @@
+# Kanzo Harness
+
+Santapong's portfolio and agent-context fork of
+[emanuele-em/kanzo](https://github.com/emanuele-em/kanzo), based on v0.2.1.
+The fork's integration branch is **develop**. Build this fork from source;
+the upstream installation commands below install the original product.
+Upstream performance measurements and screenshots below describe upstream,
+not measurements of this modified workspace.
+
+The fork adds responsive light/dark portfolio views, status/category charts,
+a shared Timeline/Calendar schedule, human timers and manual time, real subtasks,
+dependencies, structured task/project briefs and selected Codex context references.
+Read [the fork guide](docs/HARNESS.md) for setup, API/MCP, data migration,
+validation and rollback. Keep private board data and memory outside this public
+source repository. The upstream AGPL license and authorship remain intact.
+
+---
+
+## Original upstream documentation
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/kanzo-dark.jpg">

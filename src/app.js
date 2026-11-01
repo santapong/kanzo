@@ -19,7 +19,15 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#e8590c"];
 
 const state = {
-  project: "all",        // slug or "all"
+  project: "@dashboard", // project slug or @dashboard/all/@review/@archive
+  scope: "active",
+  harness: { profiles: {}, plans: {}, time_entries: [], events: [] },
+  statusFilter: "",
+  weekOffset: 0,
+  monthOffset: 0,
+  taskTab: "overview",
+  typeFilter: "",
+  projectQuery: "",
   board: null,           // last /api/board reply
   changes: null,         // change counter seen last
   task: null,            // open task id
@@ -29,6 +37,7 @@ const state = {
   allDone: false,        // show every card in the done column
   menu: null,            // slug of the project whose "⋯" menu is open, or "settings"
 };
+const acceptanceDrafts = new Map();
 
 // ---------- helpers ----------
 
@@ -76,6 +85,18 @@ const ICONS = {
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-8H9v8H4a1 1 0 0 1-1-1Z"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  timeline: '<path d="M3 5h18M7 9h10M4 13h8M12 17h8M3 3v18"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v12h14V8M10 12h4"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  play: '<path d="m8 4 12 8-12 8Z"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
+  book: '<path d="M12 6v15M3 4c4-1 7 0 9 2 2-2 5-3 9-2v15c-4-1-7 0-9 2-2-2-5-3-9-2Z"/>',
+  arrow: '<path d="m9 5 7 7-7 7"/>',
 };
 
 function icon(name, color) {
@@ -279,10 +300,21 @@ async function loadBoard() {
   try {
     // The server leaves out older done tasks unless asked: the board does not show
     // them, and the done column only grows. Search needs them all.
-    const done = state.allDone ? "&done=all" : "";
-    const board = await api("GET", "/board?project=" + encodeURIComponent(state.project) + done);
+    const done = (state.allDone || isPortfolioRoute(state.project)) ? "&done=all" : "";
+    const [board, harness] = await Promise.all([
+      api("GET", "/board?project=" + encodeURIComponent(isPortfolioRoute(state.project) ? "all" : state.project) + done),
+      api("GET", "/harness"),
+    ]);
+    if (request !== boardRequest) return;
+    state.harness = harness;
+    for (const p of board.projects) {
+      const profile = profileFor(p.slug);
+      p.portfolio = { category: profile.category || "Needs classification", state: profile.visibility || "review", eligible: profile.visibility === "active", reason: profile.context_notes || "", category_source: "project profile" };
+    }
+    board.portfolio = { projects: board.projects.map((p) => ({ slug: p.slug, ...p.portfolio })), categories: [...new Set(board.projects.map((p) => p.portfolio.category))] };
     if (request !== boardRequest) return;
     state.board = board;
+    if (!isPortfolioRoute(state.project)) state.scope = scopeForProject(state.project);
     state.changes = board.changes;
     $("#offline").hidden = true;
     render();
@@ -311,6 +343,14 @@ function readHash() {
 
 function setProject(slug) {
   state.project = slug;
+  closeSidebar();
+  if (["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time"].includes(slug)) state.scope = "active";
+  else if (slug === "@review" || slug === "@archive") state.scope = slug.slice(1);
+  else {
+    state.typeFilter = "";
+    state.statusFilter = "";
+    if (state.board) state.scope = scopeForProject(slug);
+  }
   try { localStorage.setItem("kanzo.project", slug); } catch {}
   updateHash();
   state.layout = "";
@@ -319,32 +359,86 @@ function setProject(slug) {
 
 function render() {
   renderNav();
+  renderDateControls();
+  renderTimerIndicator();
   renderHeader();
-  renderColumns();
+  if (state.project !== "all" && isPortfolioRoute(state.project)) {
+    $("#columns").hidden = true;
+    $("#dashboard").hidden = false;
+    renderWorkspaceView();
+  } else {
+    $("#dashboard").hidden = true;
+    $("#columns").hidden = false;
+    renderColumns();
+  }
 }
 
+function isPortfolioRoute(slug) { return ["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time", "@review", "@archive"].includes(slug); }
+function projectMeta(p) {
+  return p?.portfolio || state.board?.portfolio?.projects?.find((m) => m.slug === p?.slug) ||
+    { category: "Needs classification", state: "review", eligible: false, reason: "Activity metadata is unavailable." };
+}
+function scopeForProject(slug) {
+  const p = state.board?.projects.find((p) => p.slug === slug);
+  const kind = projectMeta(p).state;
+  return kind === "active" ? "active" : kind === "review" ? "review" : "archive";
+}
+function scopeProjects(scope = state.scope) {
+  return (state.board?.projects || []).filter((p) => {
+    const m = projectMeta(p);
+    return scope === "active" ? m.state === "active" : scope === "review" ? m.state === "review" : ["inactive", "alias"].includes(m.state);
+  });
+}
+function visibleProjects() {
+  const words = state.projectQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return scopeProjects().filter((p) => (!state.typeFilter || projectMeta(p).category === state.typeFilter) &&
+    words.every((w) => [p.name, p.slug, ...p.repos, projectMeta(p).category].join(" ").toLowerCase().includes(w)));
+}
+function visibleTasks() {
+  if (!isPortfolioRoute(state.project)) return state.board.tasks;
+  const slugs = new Set(scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter).map((p) => p.slug));
+  return state.board.tasks.filter((t) => slugs.has(t.project) && (state.project !== "@planning" || t.status === "todo"));
+}
 function renderNav() {
-  // Redrawing would take the field away from someone renaming a project.
   if (renaming && document.contains(renaming.input)) return;
-  const { projects } = state.board;
-  const open = projects.reduce((n, p) => n + p.open, 0);
+  const projects = visibleProjects();
   const link = (slug, name, count, glyph) =>
     el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
-              onclick: (e) => { e.preventDefault(); setProject(slug); } },
-      glyph,
-      el("span", { class: "name" }, name),
-      el("span", { class: "count" }, String(count)));
+      onclick: (e) => { e.preventDefault(); if (isPortfolioRoute(slug)) { state.typeFilter = ""; state.statusFilter = ""; } setProject(slug); } },
+      glyph, el("span", { class: "name" }, name), el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
     : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
-    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
-    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
-                   onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
+      link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
+      el("button", { class: "more", title: "Project options", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
+        onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
+  const groups = new Map();
+  for (const p of projects) {
+    const category = projectMeta(p).category || "Needs classification";
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(p);
+  }
+  const grouped = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([category, list]) => {
+    const details = el("details", { class: "project-group" });
+    details.open = localStorageGet("kanzo.group." + category) !== "closed";
+    details.addEventListener("toggle", () => { try { localStorage.setItem("kanzo.group." + category, details.open ? "open" : "closed"); } catch {} });
+    details.append(el("summary", {}, el("span", {}, category), el("span", { class: "count" }, String(list.length))),
+      ...list.sort((a, b) => a.name.localeCompare(b.name)).map(item));
+    return details;
+  });
+  const active = scopeProjects("active"), review = scopeProjects("review"), archive = scopeProjects("archive");
   $("#nav").replaceChildren(
-    link("all", "All projects", open, icon("board")),
-    ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
-    ...projects.map(item),
-  );
+    link("@dashboard", "Overview", "", icon("home")),
+    link("@projects", "Projects", active.length, icon("folder")),
+    link("@planning", "Planning queue", activeLeaves().filter((t) => t.status === "todo").length, icon("list")),
+    link("all", "Board", "", icon("board")),
+    link("@timeline", "Timeline", "", icon("timeline")),
+    link("@calendar", "Calendar", "", icon("calendar")),
+    link("@time", "Time log", "", icon("clock")),
+    el("div", { class: "nav-secondary" }, link("@review", "Needs review", review.length, icon("info")), link("@archive", "Archive", archive.length, icon("archive"))),
+    el("div", { class: "label" }, state.scope === "active" ? "Active projects by type" : state.scope === "review" ? "Projects needing review" : "Archived projects by type"),
+    ...grouped,
+    ...(!projects.length ? [el("p", { class: "nav-empty" }, "No projects match this view.")] : []));
 }
 
 // ---------- project menu ----------
@@ -387,11 +481,15 @@ function toggleProjectMenu(p, button) {
     icon("trash"), "Delete project");
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches, el("div", { class: "label" }, "Repos"), repos,
-    el("div", { class: "sep" }), rename, remove);
+    el("div", { class: "sep" }),
+    el("button", { onclick: () => { closeMenu(); showCategoryDialog(p); } }, icon("folder"), "Categorize project"),
+    el("button", { onclick: () => { closeMenu(); savePortfolio(p.slug, { visibility: projectMeta(p).state === "active" ? "inactive" : "active" }); } }, icon("folder"), projectMeta(p).state === "active" ? "Move to archive" : "Restore to active"),
+    el("button", { onclick: () => { closeMenu(); showProjectProfile(p); } }, icon("info"), "Project brief & context"),
+    rename, remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
-  menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
+  menu.style.top = `${Math.max(8, below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight)}px`;
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   // Focus the menu itself, so Tab reaches its buttons without one looking selected.
   menu.focus();
@@ -458,7 +556,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog, dialog, #theme-toggle, #timer-indicator, #sidebar-toggle, #sidebar-scrim")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -470,25 +568,76 @@ function currentProject() {
 
 function renderHeader() {
   const p = currentProject();
-  const { projects, tasks } = state.board;
   const header = $("#header");
-  $("#new-task").hidden = !projects.length;
-  if (!projects.length) { header.replaceChildren(); return; }
-  // Plain words for what each piece is: how much is open, and the repos on GitHub.
-  const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
+  $("#new-task").hidden = state.scope !== "active" || !scopeProjects().length;
+  $("#project-notice").hidden = !p;
   if (!p) {
-    const count = projects.reduce((n, p) => n + p.open, 0);
-    header.replaceChildren(el("h1", {}, "All projects"),
-      el("span", { class: "sub" }, `${open(count)} in ${projects.length} project${projects.length === 1 ? "" : "s"}`));
+    const titles = { "@dashboard": "Portfolio planning", "@projects": "Projects", "@planning": "Planning queue", "@timeline": "Timeline", "@calendar": "Calendar", "@time": "Time log", all: "Task board", "@review": "Needs review", "@archive": "Archive" };
+    const list = scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter);
+    header.replaceChildren(el("h1", {}, titles[state.project] || "Task board"),
+      el("span", { class: "sub" }, state.project === "@dashboard" ? "Your projects. A clear next step." : `${list.length} projects`));
+    if (state.typeFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.typeFilter = ""; render(); } }, state.typeFilter + " ×"));
+    if (state.statusFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.statusFilter = ""; state.layout = ""; render(); } }, state.statusFilter + " ×"));
+    $("#project-notice").hidden = true;
     return;
   }
-  header.replaceChildren(
-    el("h1", {}, p.name),
-    el("span", { class: "sub" }, open(p.open)),
-    ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
-                                    title: `Open ${r} on GitHub` }, icon("github"), r)),
-  );
+  const m = projectMeta(p);
+  header.replaceChildren(el("h1", {}, p.name), el("span", { class: "sub" }, `${p.open} open tasks`),
+    el("button", { class: "filter-chip", onclick: () => showCategoryDialog(p), title: "Change project type" }, m.category || "Categorize"),
+    ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener" }, icon("github"), r)));
+  const notice = $("#project-notice");
+  notice.replaceChildren(el("span", {}, m.state === "active" ? (m.band === "2to3months" ? "Activity is in the 2–3 month warning band." : "Active project") : m.state === "review" ? "Needs review — excluded from automatic selection." : "Archived — hidden from the active sidebar."),
+    el("span", { class: "notice-reason" }, m.reason || ""),
+    ...(m.state !== "active" ? [el("button", { class: "btn", onclick: () => savePortfolio(p.slug, { visibility: "active" }) }, "Restore to active")] : []));
 }
+
+function projectDate(value) {
+  if (!value) return "Activity unknown";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "Activity unknown" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+async function savePortfolio(slug, patch) {
+  try {
+    const profile = profileFor(slug);
+    if (Object.prototype.hasOwnProperty.call(patch, "category")) profile.category = patch.category || "Needs classification";
+    if (patch.visibility) profile.visibility = patch.visibility;
+    await api("PUT", `/projects/${encodeURIComponent(slug)}/profile`, profile);
+    await loadBoard();
+    toast(patch.visibility === "inactive" ? "Project archived. Task history preserved." : patch.visibility === "active" ? "Project restored to active." : "Project organization saved.");
+    return true;
+  } catch (err) { toast(err.message); return false; }
+}
+let categoryProject = null;
+function showCategoryDialog(p) {
+  categoryProject = p;
+  const current = projectMeta(p).category || "Needs classification";
+  const choices = [...new Set([...(state.board.portfolio?.categories || []), ...state.board.projects.map((p) => projectMeta(p).category), current].filter(Boolean))].sort();
+  $("#category-title").textContent = `Categorize ${p.name}`;
+  $("#category-choice").replaceChildren(...choices.map((c) => el("option", { value: c }, c)), el("option", { value: "__new__" }, "+ Create a new type…"));
+  $("#category-choice").value = current;
+  $("#category-new").value = ""; $("#category-new-wrap").hidden = true; $("#category-error").hidden = true;
+  $("#category-dialog").showModal(); $("#category-choice").focus();
+}
+$("#category-choice").addEventListener("change", () => {
+  $("#category-new-wrap").hidden = $("#category-choice").value !== "__new__";
+  if (!$("#category-new-wrap").hidden) $("#category-new").focus();
+});
+$("#category-cancel").addEventListener("click", () => $("#category-dialog").close());
+$("#category-reset").addEventListener("click", async () => {
+  if (categoryProject && await savePortfolio(categoryProject.slug, { category: null })) $("#category-dialog").close();
+});
+$("#category-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); if (!categoryProject) return;
+  const category = $("#category-choice").value === "__new__" ? $("#category-new").value.trim() : $("#category-choice").value;
+  if (!category || category.length > 64) { $("#category-error").textContent = "Enter a project type of 1–64 characters."; $("#category-error").hidden = false; return; }
+  const button = $("#category-save"); button.disabled = true;
+  try {
+    await api("PUT", `/projects/${encodeURIComponent(categoryProject.slug)}/profile`, { ...profileFor(categoryProject.slug), category });
+    $("#category-dialog").close(); await loadBoard(); toast("Project type saved.");
+  } catch (err) { $("#category-error").textContent = err.message; $("#category-error").hidden = false; }
+  finally { button.disabled = false; }
+});
+$("#project-filter").addEventListener("input", (e) => { state.projectQuery = e.target.value; renderNav(); });
 
 async function deleteProject(p) {
   const tasks = p.total ? ` and its ${p.total} task${p.total > 1 ? "s" : ""}, with their comments` : "";
@@ -501,7 +650,9 @@ async function deleteProject(p) {
 }
 
 function renderColumns() {
-  const { statuses, projects, tasks } = state.board;
+  const statuses = state.statusFilter ? state.board.statuses.filter((s) => s === state.statusFilter) : state.board.statuses;
+  const projects = isPortfolioRoute(state.project) ? scopeProjects() : state.board.projects;
+  const tasks = visibleTasks();
   const columns = $("#columns");
   if (!projects.length) {
     state.layout = "";
@@ -515,7 +666,7 @@ function renderColumns() {
   columns.style.display = "";
 
   // Build the columns once per layout so a refresh never wipes a half-typed task.
-  const layout = statuses.join(",") + "|" + state.project;
+  const layout = statuses.join(",") + "|" + state.project + "|" + state.scope + "|" + state.typeFilter + "|" + state.statusFilter;
   if (state.layout !== layout) {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status) => {
@@ -536,13 +687,13 @@ function renderColumns() {
 
   // During a drag the DOM is being moved by hand; refresh once it ends.
   if (state.dragging) return;
-  const all = state.project === "all";
+  const all = isPortfolioRoute(state.project);
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
     const mine = tasks.filter((t) => t.status === status);
     // Older done tasks the server left out (see loadBoard).
     const last = status === statuses[statuses.length - 1];
-    const hidden = last && !state.allDone ? state.board.done_hidden || 0 : 0;
+    const hidden = last && !state.allDone && !isPortfolioRoute(state.project) ? state.board.done_hidden || 0 : 0;
     const count = mine.length + hidden;
     col.querySelector("h2 .count").textContent = count ? String(count) : "";
     const more = hidden
@@ -671,10 +822,11 @@ const NEW_TITLE = "New task";
 let fresh = null; // id of the task just added, until something in it is saved
 
 async function newTask() {
-  const { projects } = state.board;
+  const projects = !isPortfolioRoute(state.project) ? state.board.projects.filter((p) => p.slug === state.project)
+    : scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter);
   if (!projects.length) { toast("Create a project first"); return; }
   const last = localStorageGet("kanzo.newTaskProject");
-  const project = state.project !== "all" ? state.project
+  const project = !isPortfolioRoute(state.project) ? state.project
     : projects.some((p) => p.slug === last) ? last : projects[0].slug;
   try {
     const task = await api("POST", "/tasks", { project, title: NEW_TITLE });
@@ -734,7 +886,9 @@ let panelTask = null;
 async function openTask(id) {
   leavePanelField();
   if (fresh !== id) dropFresh();
+  if (state.task !== id) state.taskTab = "overview";
   state.task = id;
+  document.body.classList.add("detail-open");
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
   $("#p-comment").value = "";
@@ -760,6 +914,7 @@ function closeTask() {
   panelTask = null;
   updateHash();
   panel.classList.remove("shown");
+  document.body.classList.remove("detail-open");
   panel.setAttribute("aria-hidden", "true");
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
 }
@@ -769,7 +924,9 @@ async function refreshTask() {
   if (!id) return;
   let data;
   try {
-    data = await api("GET", `/tasks/${id}`);
+    const reply = await Promise.all([api("GET", `/tasks/${id}`), api("GET", `/tasks/${id}/context`)]);
+    data = reply[0];
+    if (state.task === id) state.taskContext = reply[1];
   } catch (e) {
     if (state.task === id && /no task/.test(e.message)) { toast("That task was deleted"); closeTask(); }
     return;
@@ -777,6 +934,7 @@ async function refreshTask() {
   // Another task may have taken the panel meanwhile.
   if (state.task !== id) return;
   const { task, comments, images } = data;
+  renderTaskHarness(task, state.taskContext);
   panelTask = task;
   $("#p-key").textContent = key(task);
   $("#p-key").title = `Copy ${key(task)}`;
@@ -788,7 +946,7 @@ async function refreshTask() {
   showDesc();
   const status = $("#p-status");
   const statuses = state.board ? state.board.statuses : [task.status];
-  status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
+  status.replaceChildren(...statuses.map((s) => el("option", { value: s, disabled: s === "done" && task.status !== "done" }, s === "done" && task.status !== "done" ? "Done — accept with evidence" : s)));
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
   $("#p-human").checked = task.human;
@@ -1055,12 +1213,14 @@ async function runSearch() {
   const q = $("#search").value.trim();
   const request = ++searchRequest;
   try {
-    const found = await api("GET", "/search?q=" + encodeURIComponent(q));
+    const board = await api("GET", "/board?project=all&done=all");
     if (request !== searchRequest) return;
-    results = found;
+    const permitted = new Set(scopeProjects().map((p) => p.slug));
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    results = board.tasks.filter((t) => permitted.has(t.project) && words.every((w) => [key(t), t.title, t.description, ...t.tags].join(" ").toLowerCase().includes(w))).slice(0, 30);
     selected = 0;
     $("#search-results").replaceChildren(
-      ...(results.length ? [el("div", { class: "label" }, q ? "Tasks" : "Recent")] : []),
+      ...(results.length ? [el("div", { class: "label" }, q ? "Tasks" : "Browse tasks")] : []),
       ...results.map((t, i) => el("button", { type: "button", class: "result" + (i === 0 ? " selected" : ""),
                                              onmousemove: () => select(i), onclick: () => pick(t) },
         el("span", { class: "dot", style: `background:${projectColor(t.project)}` }),
@@ -1081,7 +1241,7 @@ function select(i) {
 // Opens the task, in its own project unless the board shows all of them.
 function pick(t) {
   closeSearch();
-  if (state.project !== "all" && state.project !== t.project) setProject(t.project);
+  if (isPortfolioRoute(state.project) || state.project !== t.project) setProject(t.project);
   openTask(t.id);
 }
 
@@ -1097,6 +1257,7 @@ $("#search-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "
 // ---------- keyboard, polling, start ----------
 
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.querySelector("dialog[open]")) return;
   const typing = e.target.closest("input, textarea, select");
   if (e.key === "Escape" && state.menu) { closeMenu(); return; }
   if (e.key === "Escape" && state.task && !typing) closeTask();
@@ -1111,7 +1272,7 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("hashchange", () => {
   const { slug, task } = readHash();
-  if ((slug || "all") !== state.project) setProject(slug || "all");
+  if ((slug || "@dashboard") !== state.project) setProject(slug || "@dashboard");
   if (task && task !== state.task) openTask(task);
   else if (!task && state.task) closeTask();
 });
@@ -1344,6 +1505,387 @@ async function installUpdate(available) {
   location.reload();
 }
 
+
+// ---------- native planning workspace ----------
+const PROFILE_DEFAULTS = { category: "Needs classification", visibility: "review", goal: "", source_path: "", source_revision: "", allowed_scope: "", acceptance: "", budget: "", instructions: [], skills: [], memories: [], context_notes: "" };
+const PLAN_DEFAULTS = { parent_id: null, depends_on: [], planned_start: null, planned_end: null, due_date: null, estimate_seconds: null, owner: "", deliverable: "", acceptance: "", allowed_scope: "", budget: "", context_links: [] };
+function profileFor(slug) {
+  const source = state.harness?.profiles?.[slug] || {};
+  return Object.fromEntries(Object.entries(PROFILE_DEFAULTS).map(([k, v]) => [k, source[k] ?? (Array.isArray(v) ? [] : v)]));
+}
+function planFor(id) {
+  const source = state.harness?.plans?.[String(id)] || {};
+  return Object.fromEntries(Object.entries(PLAN_DEFAULTS).map(([k, v]) => [k, source[k] ?? (Array.isArray(v) ? [] : v)]));
+}
+function taskById(id) { return state.board?.tasks.find((t) => t.id === Number(id)); }
+function allActiveTasks() {
+  const projects = new Set(scopeProjects("active").filter((p) => !state.typeFilter || profileFor(p.slug).category === state.typeFilter).map((p) => p.slug));
+  return (state.board?.tasks || []).filter((t) => projects.has(t.project));
+}
+function childrenOf(id) { return (state.board?.tasks || []).filter((t) => planFor(t.id).parent_id === id); }
+function activeLeaves() { return allActiveTasks().filter((t) => !childrenOf(t.id).length); }
+function taskTitle(t) { return t.title.replace(/^\[[^\]]+\]\s*/, ""); }
+function countBy(items, fn) { const counts = {}; for (const item of items) { const name = fn(item); counts[name] = (counts[name] || 0) + 1; } return counts; }
+function dateISO() { return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
+function addDays(iso, n) { const d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function instantDay(value) { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? null : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit" }).format(parsed); }
+function scheduleOccurs(plan, day) { const start = plan.planned_start || plan.planned_end; const end = plan.planned_end || plan.planned_start; return plan.due_date === day || !!(start && end && start <= day && end >= day); }
+function dayDiff(a, b) { return Math.round((new Date(a + "T12:00:00Z") - new Date(b + "T12:00:00Z")) / 86400000); }
+function weekDays() { const today = dateISO(), day = new Date(today + "T12:00:00Z").getUTCDay(); const start = addDays(today, -((day + 6) % 7) + state.weekOffset * 7); return Array.from({ length: 7 }, (_, i) => addDays(start, i)); }
+function displayDay(iso, options = {}) { return new Date(iso + "T12:00:00Z").toLocaleDateString(undefined, { timeZone: "UTC", day: "numeric", month: "short", ...options }); }
+function shortDuration(seconds) {
+  const n = Math.max(0, Math.round(Number(seconds) || 0)), h = Math.floor(n / 3600), m = Math.floor(n % 3600 / 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m` : `${n}s`;
+}
+function mergeTimeEntries(entries, extra = []) { return [...new Map([...entries, ...extra].map((entry) => [String(entry.id), entry])).values()]; }
+function timeEntries(taskId) { return mergeTimeEntries(state.harness?.time_entries || [], state.harness?.active_timers || []).filter((entry) => taskId == null || entry.task_id === taskId); }
+function completedSeconds(entries) { return entries.reduce((n, e) => n + (e.ended_at && Number.isFinite(e.seconds) ? e.seconds : 0), 0); }
+function recordedSecondsForTasks(taskIds, actor = "human") {
+  const ids = new Set(taskIds), totals = state.harness?.time_totals?.by_task;
+  if (totals) return [...ids].reduce((n, id) => n + Number(totals[String(id)]?.by_actor?.[actor] || 0), 0);
+  return completedSeconds(timeEntries().filter((entry) => ids.has(entry.task_id) && entry.actor === actor));
+}
+function runningTimer() { return timeEntries().find((e) => e.actor === "human" && !e.ended_at && e.kind === "timer") || null; }
+function elapsedSeconds(entry) { const t = new Date(entry.started_at).getTime(); return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 1000)) : 0; }
+function taskButton(t, extra = {}) { return el("button", { class: "work-task-link", onclick: () => { setProject(t.project); openTask(t.id); }, ...extra }, el("span", { class: "project-dot", style: `--project-color:${projectColor(t.project)}` }), el("span", {}, taskTitle(t))); }
+function scheduleTaskButton(task) { const button = taskButton(task); if (childrenOf(task.id).length) button.append(el("span", { class: "status-pill" }, "Summary")); return button; }
+function sectionHead(title, aside) { return el("div", { class: "workspace-card-head" }, el("h2", {}, title), aside || null); }
+function emptyState(title, text, action) { return el("div", { class: "workspace-empty" }, icon("info"), el("strong", {}, title), el("p", {}, text), action || null); }
+function filterBoard({ category = "", status = "" } = {}) { state.typeFilter = category; state.statusFilter = status; setProject("all"); }
+function chartRows(entries, denominator, onPick, colors) {
+  const max = Math.max(1, ...entries.map(([, n]) => n));
+  return el("div", { class: "chart-rows" }, ...entries.map(([label, n], i) =>
+    el("button", { class: "chart-row", onclick: () => onPick(label), "aria-label": `${label}: ${n} of ${denominator}` },
+      el("span", { class: "chart-label" }, label), el("span", { class: "chart-track" }, el("span", { class: "chart-fill", style: `width:${n / max * 100}%;--chart-color:${colors[i % colors.length]}` })), el("span", { class: "chart-value" }, String(n)))));
+}
+function renderWorkspaceView() {
+  renderDateControls(); renderTimerIndicator();
+  if (state.project === "@dashboard") renderPlanningDashboard();
+  else if (state.project === "@timeline") $("#dashboard").replaceChildren(timelinePanel(false));
+  else if (state.project === "@calendar") renderCalendar();
+  else if (state.project === "@time") renderTimeView();
+  else renderProjectList();
+}
+function renderDateControls() {
+  const root = $("#view-date-controls");
+  if (!["@dashboard", "@timeline", "@calendar"].includes(state.project)) { root.replaceChildren(); return; }
+  const month = state.project === "@calendar", days = weekDays();
+  const anchor = new Date(dateISO() + "T12:00:00Z"); anchor.setUTCMonth(anchor.getUTCMonth() + state.monthOffset, 1);
+  const label = month ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" }) : `${displayDay(days[0])} – ${displayDay(days[6], { year: "numeric" })}`;
+  const step = (n) => { if (month) state.monthOffset += n; else state.weekOffset += n; renderWorkspaceView(); };
+  root.replaceChildren(el("button", { class: "btn quiet", onclick: () => { state.weekOffset = 0; state.monthOffset = 0; renderWorkspaceView(); } }, month ? "This month" : "This week"),
+    el("div", { class: "date-stepper" }, el("button", { class: "btn quiet", "aria-label": "Previous period", onclick: () => step(-1) }, "‹"), el("button", { class: "btn quiet", "aria-label": "Next period", onclick: () => step(1) }, "›")), el("span", { class: "date-label" }, label));
+}
+function renderPlanningDashboard() {
+  const projects = scopeProjects("active"), tasks = activeLeaves(), containers = allActiveTasks().length - tasks.length;
+  const statuses = state.board.statuses.map((s) => [s, tasks.filter((t) => t.status === s).length]);
+  const types = Object.entries(countBy(projects, (p) => profileFor(p.slug).category)).sort((a, b) => b[1] - a[1]);
+  const activeIds = new Set(allActiveTasks().map((t) => t.id));
+  const entries = timeEntries().filter((e) => activeIds.has(e.task_id) && e.actor === "human");
+  const logged = recordedSecondsForTasks(activeIds), openTimer = runningTimer();
+  const metric = (symbol, value, label, note) => el("div", { class: "planning-metric" }, icon(symbol), el("div", {}, el("strong", {}, String(value)), el("span", {}, label), note ? el("small", {}, note) : null));
+  const stats = el("section", { class: "planning-metrics", "aria-label": "Portfolio summary" },
+    metric("folder", projects.length, "Active projects"), metric("list", tasks.filter((t) => t.status !== "done").length, "Open leaf tasks", `${containers} summary containers`),
+    metric("calendar", tasks.filter((t) => t.status === "todo").length, "Todo work", "Dependencies are checked before execution"),
+    metric("clock", logged ? shortDuration(logged) : "No time entries", "Recorded human work", openTimer ? "A human timer is running" : "Estimates are separate"));
+  const statusCard = el("section", { class: "workspace-card" }, sectionHead("Current task states", el("span", { class: "denominator" }, `${tasks.length} leaf tasks`)), chartRows(statuses, tasks.length, (status) => filterBoard({ status }), ["var(--teal)", "var(--blue)", "var(--amber)", "var(--purple)", "var(--gray)"]));
+  const typesCard = el("section", { class: "workspace-card" }, sectionHead("Active projects by type"), chartRows(types, projects.length, (category) => filterBoard({ category }), ["var(--purple)", "var(--blue)", "var(--teal)", "var(--amber)", "var(--gray)"]));
+  const days = weekDays(), scheduled = allActiveTasks().filter((t) => { const p = planFor(t.id); return p.planned_start || p.planned_end || p.due_date; });
+  const agenda = el("section", { class: "workspace-card weekly-agenda" }, sectionHead("Weekly agenda"), el("p", { class: "workspace-subtitle" }, `${displayDay(days[0])} – ${displayDay(days[6])} · Asia/Bangkok`),
+    ...days.map((day) => { const mine = scheduled.filter((t) => { const p = planFor(t.id); return scheduleOccurs(p, day); });
+      return el("div", { class: "agenda-day" }, el("div", { class: "agenda-date" }, el("strong", {}, displayDay(day, { weekday: "short", day: undefined, month: undefined })), el("small", {}, displayDay(day))), el("div", { class: "agenda-tasks" }, ...mine.map((t) => el("div", {}, scheduleTaskButton(t), el("small", {}, planFor(t.id).due_date === day ? "Due date" : "Planned · all day"))), ...(!mine.length ? [el("span", { class: "agenda-empty" }, "—")] : []))); }));
+  const timeCard = el("section", { class: "workspace-card time-summary" }, sectionHead("Time tracking"),
+    entries.length ? el("div", { class: "time-total" }, icon("clock"), el("strong", {}, shortDuration(logged)), el("span", {}, "Recorded human effort")) : emptyState("No entries yet", "Estimates and actual time are separate.", null),
+    el("button", { class: "btn primary", onclick: () => showTimeDialog() }, "Add time entry"));
+  $("#dashboard").replaceChildren(stats, el("div", { class: "overview-grid" }, el("div", { class: "overview-main" }, el("div", { class: "overview-charts" }, statusCard, typesCard), timelinePanel(true), completionPanel(tasks)), el("div", { class: "overview-side" }, agenda, timeCard)));
+}
+function timelinePanel(compact) {
+  const days = weekDays(), tasks = allActiveTasks();
+  const scheduled = tasks.filter((t) => days.some((day) => scheduleOccurs(planFor(t.id), day)));
+  const unscheduled = activeLeaves().filter((t) => { const p = planFor(t.id); return !p.planned_start && !p.planned_end && !p.due_date; });
+  const grid = el("div", { class: "timeline-grid", role: "table", "aria-label": "Planned tasks this week" }, el("div", { class: "timeline-label timeline-head", role: "columnheader" }, "Task"), ...days.map((d) => el("div", { class: "timeline-head", role: "columnheader" }, displayDay(d, { weekday: "short", month: undefined }))));
+  for (const t of scheduled) {
+    const p = planFor(t.id), start = p.planned_start || p.due_date || p.planned_end, end = p.planned_end || p.due_date || p.planned_start;
+    grid.append(el("div", { class: "timeline-label", role: "rowheader" }, scheduleTaskButton(t)));
+    for (const day of days) grid.append(el("div", { class: "timeline-cell", role: "cell" }, scheduleOccurs(p, day) ? el("button", { class: "timeline-bar" + (p.due_date === day ? " due" : ""), style: `--project-color:${projectColor(t.project)}`, "aria-label": `${childrenOf(t.id).length ? "Summary · " : ""}${taskTitle(t)}: ${displayDay(day)}`, onclick: () => showSchedule(t) }, p.due_date === day && !p.planned_start ? "◆" : "") : null));
+  }
+  if (!scheduled.length) grid.append(el("div", { class: "timeline-empty" }, "No tasks scheduled for this week. Add dates to show the plan here."));
+  const tray = el("div", { class: "unscheduled-tray" }, icon("list"), el("div", {}, el("strong", {}, `Unscheduled leaf tasks · ${unscheduled.length}`), el("p", {}, "These tasks do not have dates yet. Schedule them when you are ready.")), el("button", { class: "btn quiet", onclick: () => { if (compact) setProject("@timeline"); else $("#unscheduled-list").hidden = !$("#unscheduled-list").hidden; } }, compact ? "View unscheduled ›" : "Show / hide tasks"));
+  const panel = el("section", { class: "workspace-card timeline-panel" }, sectionHead(compact ? "Timeline preview" : "Weekly timeline", el("span", { class: "denominator" }, "Saved plan dates")), el("p", { class: "workspace-subtitle" }, `${displayDay(days[0])} – ${displayDay(days[6])} · Asia/Bangkok`), el("div", { class: "timeline-scroll" }, grid), tray);
+  if (!compact) panel.append(el("div", { id: "unscheduled-list", class: "unscheduled-list" }, ...unscheduled.map((t) => el("div", { class: "schedule-list-row" }, taskButton(t), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Schedule")))));
+  return panel;
+}
+function completionPanel(tasks) {
+  const ids = new Set(tasks.map((t) => t.id)), accepted = (state.harness.events || []).filter((e) => e.kind === "accepted" && ids.has(e.task_id));
+  if (!accepted.length) return el("section", { class: "workspace-card completion-history" }, sectionHead("Accepted completion history"), el("p", { class: "workspace-subtitle" }, state.harness.history_window?.events?.truncated ? "No accepted completions in the returned event window. Earlier history is outside this view." : "No accepted completions recorded yet. History starts when evidence is accepted; earlier task updates are not backfilled."));
+  const days = weekDays(), counts = days.map((d) => [d, accepted.filter((e) => instantDay(e.at) === d).length]);
+  return el("section", { class: "workspace-card" }, sectionHead("Accepted completion events", el("span", { class: "denominator" }, state.harness.history_window?.events?.truncated ? "Latest 500 recorded events" : "Recorded events only")), chartRows(counts.map(([d, n]) => [displayDay(d), n]), accepted.length, () => {}, ["var(--teal)"]));
+}
+function renderProjectList() {
+  if (state.project === "@planning") {
+    const tasks = activeLeaves().filter((t) => t.status === "todo");
+    $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "Todo leaf tasks. Dependencies, source scope and acceptance are checked before execution."), el("section", { class: "workspace-card task-list" }, ...tasks.map((t) => el("div", { class: "project-list-row" }, taskButton(t), el("span", { class: "status-pill" }, t.status), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Plan dates"))), ...(!tasks.length ? [emptyState("No todo work", "Select a project to plan the next concrete task.")] : [])));
+    return;
+  }
+  const projects = visibleProjects();
+  $("#dashboard").replaceChildren(el("div", { class: "project-list-toolbar" }, el("p", { class: "workspace-subtitle" }, state.scope === "active" ? "Active projects, grouped by their saved type. Change a category or edit the project brief." : "History is preserved. Restore a project when its work should return to active planning.")),
+    ...[...new Set(projects.map((p) => profileFor(p.slug).category))].sort().map((category) => el("section", { class: "workspace-card project-list" }, sectionHead(category), ...projects.filter((p) => profileFor(p.slug).category === category).map((p) => el("div", { class: "project-list-row" }, el("a", { href: "#" + p.slug, onclick: (e) => { e.preventDefault(); setProject(p.slug); } }, icon("folder", projectColor(p.slug)), el("strong", {}, p.name), el("small", {}, `${p.open} open tasks`)),
+      el("button", { class: "btn quiet", onclick: () => showProjectProfile(p) }, "Project brief"), el("button", { class: "filter-chip", onclick: () => showCategoryDialog(p) }, "Categorize"))))));
+}
+function renderCalendar() {
+  const today = dateISO(), anchor = new Date(today + "T12:00:00Z"); anchor.setUTCMonth(anchor.getUTCMonth() + state.monthOffset, 1);
+  const first = anchor.toISOString().slice(0, 10), start = addDays(first, -((anchor.getUTCDay() + 6) % 7));
+  const days = Array.from({ length: 42 }, (_, i) => addDays(start, i)), tasks = allActiveTasks();
+  const grid = el("div", { class: "calendar-grid", role: "grid", "aria-label": "Saved task schedule" }, ...["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => el("div", { class: "calendar-weekday", role: "columnheader" }, d)));
+  for (const day of days) {
+    const mine = tasks.filter((t) => { const p = planFor(t.id); return scheduleOccurs(p, day); });
+    grid.append(el("div", { class: "calendar-day" + (day.slice(0, 7) !== first.slice(0, 7) ? " other-month" : "") + (day === today ? " today" : ""), role: "gridcell", "aria-label": displayDay(day, { year: "numeric" }) }, el("span", { class: "calendar-number" }, String(Number(day.slice(8)))),
+      ...mine.map((t) => el("button", { class: "calendar-task", style: `--project-color:${projectColor(t.project)}`, onclick: () => showSchedule(t) }, planFor(t.id).due_date === day ? "◆ " : "", childrenOf(t.id).length ? "Summary · " : "", taskTitle(t)))));
+  }
+  const unscheduled = activeLeaves().filter((t) => { const p = planFor(t.id); return !p.planned_start && !p.planned_end && !p.due_date; });
+  $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "All-day plans and due dates · Asia/Bangkok. Summary milestones and leaf tasks share the same schedule used by Timeline."), el("section", { class: "workspace-card calendar-panel" }, grid), el("p", { class: "workspace-subtitle" }, `${unscheduled.length} leaf tasks are unscheduled and remain visible in Timeline.`));
+}
+function renderTimeView() {
+  const tasks = allActiveTasks(), ids = new Set(tasks.map((t) => t.id)), entries = timeEntries().filter((e) => ids.has(e.task_id)), human = entries.filter((e) => e.actor === "human"), leaves = activeLeaves(), parentIds = new Set(tasks.filter((t) => childrenOf(t.id).length).map((t) => t.id));
+  const leafIds = new Set(leaves.map((t) => t.id)), estimated = leaves.filter((t) => planFor(t.id).estimate_seconds != null), estimate = estimated.reduce((n, t) => n + planFor(t.id).estimate_seconds, 0);
+  const controls = el("div", { class: "time-view-controls" }, el("p", { class: "workspace-subtitle" }, "Estimates, recorded human work and agent intervals are kept separate."), el("button", { class: "btn primary", onclick: () => showTimeDialog() }, "Add time entry"));
+  const totals = el("div", { class: "planning-metrics time-metrics" }, ...[["Estimated leaf work", shortDuration(estimate), `${estimated.length} of ${leaves.length} leaf tasks estimated`], ["Recorded human work", shortDuration(recordedSecondsForTasks(ids)), "All-history closed human entries"], ["Direct coordination", shortDuration(recordedSecondsForTasks(parentIds)), "Parent-task effort, included once"], ["Running timer", runningTimer() ? "Active" : "None", "One human timer across sessions"]].map(([label, value, note]) => el("div", { class: "planning-metric" }, icon("clock"), el("div", {}, el("strong", {}, value), el("span", {}, label), el("small", {}, note)))));
+  const byProject = scopeProjects("active").map((p) => { const mine = leaves.filter((t) => t.project === p.slug), myIds = new Set(mine.map((t) => t.id)); return { p, estimate: mine.reduce((n, t) => n + (planFor(t.id).estimate_seconds || 0), 0), hasEstimate: mine.some((t) => planFor(t.id).estimate_seconds != null), actual: recordedSecondsForTasks(myIds) }; }).filter((p) => p.hasEstimate || p.actual);
+  const comparisons = el("section", { class: "workspace-card" }, sectionHead("Estimated and recorded leaf work"), ...byProject.map(({ p, estimate, hasEstimate, actual }) => { const max = Math.max(estimate, actual, 1); return el("div", { class: "time-comparison" }, el("strong", {}, p.name), el("div", { class: "effort-row" }, el("span", {}, "Estimate"), el("span", { class: "chart-track" }, el("span", { class: "chart-fill", style: `width:${estimate / max * 100}%;--chart-color:var(--purple)` })), el("span", {}, hasEstimate ? shortDuration(estimate) : "Not set")), el("div", { class: "effort-row" }, el("span", {}, "Recorded"), el("span", { class: "chart-track" }, el("span", { class: "chart-fill", style: `width:${actual / max * 100}%;--chart-color:var(--teal)` })), el("span", {}, shortDuration(actual)))); }), ...(!byProject.length ? [emptyState("No comparison yet", "Enter an estimate or record time to compare real values.")] : []));
+  const rows = el("section", { class: "workspace-card" }, sectionHead("Time entries", state.harness.history_window?.time_entries?.truncated ? el("span", { class: "denominator" }, "Latest 500 entries · totals use all history") : null), ...(entries.length ? entries.slice().reverse().map((entry) => timeEntryRow(entry)) : [emptyState("No entries yet", "Start a timer on a task, or add an explicit manual entry.")]));
+  $("#dashboard").replaceChildren(controls, totals, comparisons, rows);
+}
+function timeEntryRow(entry) {
+  const task = taskById(entry.task_id), running = !entry.ended_at;
+  return el("div", { class: "time-entry-row" }, task ? taskButton(task) : el("span", {}, `Task #${entry.task_id}`), el("span", { class: "status-pill" }, `${entry.actor} · ${entry.kind}`), el("span", { class: "duration", "data-timer-id": running ? entry.id : null }, running ? shortDuration(elapsedSeconds(entry)) + " running" : shortDuration(entry.seconds)), el("small", {}, entry.note || ""), running && entry.actor === "human" ? el("button", { class: "btn quiet", onclick: () => stopTimer(entry) }, "Stop") : null);
+}
+
+
+// ---------- project briefs, task plans, context and explicit time ----------
+function inputField(label, name, value = "", type = "text", hint = "") {
+  const control = type === "textarea" ? el("textarea", { class: "field", name, rows: 3 }) : el("input", { class: "field", name, type });
+  control.value = value ?? "";
+  if (type === "number") { control.setAttribute("step", "any"); control.setAttribute("min", "0"); }
+  const wrapper = el("label", { class: "form-field" }, el("span", {}, label), control, hint ? el("small", {}, hint) : null);
+  return wrapper;
+}
+function formValue(form, name) { return form.elements.namedItem(name)?.value.trim() || ""; }
+let workDialogSave = null;
+function openWorkDialog(title, fields, onSave, label = "Save") {
+  $("#work-dialog-title").textContent = title;
+  $("#work-dialog-fields").replaceChildren(...fields);
+  $("#work-dialog-error").hidden = true;
+  $("#work-dialog-save").textContent = label;
+  workDialogSave = onSave;
+  $("#work-dialog").showModal();
+  $("#work-dialog-fields").querySelector("input,select,textarea")?.focus();
+}
+$("#work-dialog-close").addEventListener("click", () => $("#work-dialog").close());
+$("#work-dialog-cancel").addEventListener("click", () => $("#work-dialog").close());
+$("#work-dialog-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); if (!workDialogSave) return;
+  const button = $("#work-dialog-save"); button.disabled = true;
+  try { await workDialogSave(event.currentTarget); $("#work-dialog").close(); await loadBoard(); if (state.task) await refreshTask(); }
+  catch (err) { $("#work-dialog-error").textContent = err.message; $("#work-dialog-error").hidden = false; }
+  finally { button.disabled = false; }
+});
+function showProjectProfile(project) {
+  const p = profileFor(project.slug);
+  const fields = [inputField("Project goal", "goal", p.goal, "textarea"), el("div", { class: "form-grid" }, inputField("Source path / repository", "source_path", p.source_path), inputField("Source revision", "source_revision", p.source_revision)),
+    inputField("Allowed scope", "allowed_scope", p.allowed_scope, "textarea"), inputField("Acceptance / current gate", "acceptance", p.acceptance, "textarea"), inputField("Resource / attempt budget", "budget", p.budget),
+    inputField("Project instructions", "instructions", p.instructions.join("\n"), "textarea", "Selected paths or references, one per line."), inputField("Relevant skills", "skills", p.skills.join("\n"), "textarea", "Skill names or paths, one per line."),
+    inputField("Dated memory references", "memories", p.memories.join("\n"), "textarea", "References only. Stored notes do not establish current state."), inputField("Context notes", "context_notes", p.context_notes, "textarea")];
+  openWorkDialog(`${project.name} · project brief`, fields, async (form) => {
+    const next = { ...p };
+    for (const key of ["goal", "source_path", "source_revision", "allowed_scope", "acceptance", "budget", "context_notes"]) next[key] = formValue(form, key);
+    for (const key of ["instructions", "skills", "memories"]) next[key] = formValue(form, key).split("\n").map((v) => v.trim()).filter(Boolean);
+    await api("PUT", `/projects/${encodeURIComponent(project.slug)}/profile`, next); toast("Project brief saved.");
+  });
+}
+function showSchedule(task) {
+  const plan = planFor(task.id);
+  openWorkDialog(`Schedule · ${taskTitle(task)}`, [el("p", { class: "workspace-subtitle" }, "All-day dates · Asia/Bangkok. Timeline and Calendar share this plan."),
+    el("div", { class: "form-grid" }, inputField("Planned start", "planned_start", plan.planned_start, "date"), inputField("Planned end", "planned_end", plan.planned_end, "date")),
+    el("div", { class: "form-grid" }, inputField("Due date", "due_date", plan.due_date, "date"), inputField("Estimated minutes", "estimate", plan.estimate_seconds == null ? "" : plan.estimate_seconds / 60, "number"))], async (form) => {
+      const estimate = formValue(form, "estimate");
+      if (estimate && (!Number.isFinite(Number(estimate)) || Number(estimate) < 0)) throw new Error("Estimate must be a non-negative number of minutes.");
+      await api("PUT", `/tasks/${task.id}/plan`, { ...plan, planned_start: formValue(form, "planned_start") || null, planned_end: formValue(form, "planned_end") || null, due_date: formValue(form, "due_date") || null, estimate_seconds: estimate === "" ? null : Math.round(Number(estimate) * 60) });
+      toast("Task schedule saved.");
+    });
+}
+function requestId() { return globalThis.crypto?.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.floor(Math.random() * 16); return (c === "x" ? r : (r & 3) | 8).toString(16); }); }
+async function startTimer(task) {
+  try { await api("POST", `/tasks/${task.id}/timer`, { actor: "human", request_id: requestId() }); await loadBoard(); if (state.task) await refreshTask(); toast("Timer started."); }
+  catch (err) { toast(err.message); }
+}
+async function stopTimer(entry) {
+  try { await api("POST", `/time/${entry.id}/stop`, { actor: "human" }); await loadBoard(); if (state.task) await refreshTask(); toast("Timer stopped; recorded time saved."); }
+  catch (err) { toast(err.message); }
+}
+function showTimeDialog(task = null) {
+  const options = allActiveTasks();
+  if (task && !options.some((t) => t.id === task.id)) options.push(task);
+  if (!options.length) { toast("Create or select a task before recording time."); return; }
+  const choice = el("select", { class: "field", name: "task_id", required: true }, ...options.map((t) => el("option", { value: t.id }, `${key(t)} · ${taskTitle(t)}`)));
+  if (task) choice.value = task.id;
+  openWorkDialog("Add recorded human time", [el("label", { class: "form-field" }, el("span", {}, "Task"), choice), inputField("Duration in minutes", "minutes", "", "number"), inputField("Work note / source", "note", "", "textarea", "Describe the actual work represented by this entry.")], async (form) => {
+    const minutes = Number(formValue(form, "minutes"));
+    if (!Number.isFinite(minutes) || minutes <= 0) throw new Error("Enter a positive duration in minutes.");
+    const id = Number(formValue(form, "task_id"));
+    await api("POST", `/tasks/${id}/time`, { actor: "human", seconds: Math.round(minutes * 60), note: formValue(form, "note"), request_id: requestId() });
+    toast("Manual time entry saved.");
+  }, "Add time entry");
+}
+function renderTimerIndicator() {
+  const entry = runningTimer(), root = $("#timer-indicator");
+  if (!entry) { root.replaceChildren(); return; }
+  root.replaceChildren(el("button", { class: "timer-running", onclick: () => { const task = taskById(entry.task_id); if (task) { setProject(task.project); openTask(task.id); } } }, icon("clock"), el("span", { "data-timer-id": entry.id }, shortDuration(elapsedSeconds(entry)) + " running")), el("button", { class: "timer-stop", "aria-label": "Stop human timer", onclick: () => stopTimer(entry) }, icon("stop")));
+}
+function setTaskTab(tab) {
+  state.taskTab = tab;
+  document.querySelectorAll("[data-task-tab]").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.taskTab === tab)));
+  document.querySelectorAll("[data-task-pane]").forEach((pane) => { pane.hidden = pane.dataset.taskPane !== tab; });
+}
+document.querySelectorAll("[data-task-tab]").forEach((button) => button.addEventListener("click", () => setTaskTab(button.dataset.taskTab)));
+function renderTaskHarness(task, context) {
+  if (!context) return;
+  const profile = context.profile || profileFor(task.project), plan = { ...PLAN_DEFAULTS, ...(context.plan || planFor(task.id)) };
+  $("#task-owner-chip").replaceChildren(icon("human"), el("span", {}, plan.owner || "Owner not assigned"));
+  $("#task-source-chip").replaceChildren(icon("github"), el("span", {}, profile.source_revision || "Source revision not set"));
+  $("#task-project-brief").replaceChildren(el("h3", {}, "Project brief"), el("p", {}, profile.goal || "No project brief recorded yet."), el("button", { class: "text-button", onclick: () => { const p = state.board.projects.find((p) => p.slug === task.project); if (p) showProjectProfile(p); } }, "Edit project brief"));
+  const currentForm = $("#task-plan-form");
+  if (!currentForm || currentForm.dataset.taskId !== String(task.id) || (currentForm.dataset.dirty !== "true" && !currentForm.contains(document.activeElement))) renderTaskPlan(task, plan);
+  renderSubtasks(task, context);
+  renderContextDetail(task, context);
+  renderTaskActivity(task, context);
+  renderTaskAside(task, context);
+  const accept = $("#task-acceptance");
+  if (accept.dataset.taskId !== String(task.id) || (!accept.querySelector("textarea:focus") && !accept.querySelector("textarea[data-dirty=true]"))) {
+    accept.dataset.taskId = String(task.id);
+    const evidence = el("textarea", { class: "field", rows: 3, placeholder: "Record the evidence that satisfies this task's acceptance.", "aria-label": "Acceptance evidence" });
+    evidence.value = acceptanceDrafts.get(task.id) || "";
+    if (evidence.value) evidence.dataset.dirty = "true";
+    evidence.addEventListener("input", () => { evidence.dataset.dirty = "true"; acceptanceDrafts.set(task.id, evidence.value); });
+    const button = el("button", { type: "button", class: "btn primary", disabled: task.status !== "review", onclick: async () => {
+      if (!evidence.value.trim()) { toast("Add acceptance evidence first."); return; }
+      button.disabled = true;
+      button.dataset.submitting = "true";
+      try { await api("POST", `/tasks/${task.id}/accept`, { reviewer: "human", evidence: evidence.value.trim() }); acceptanceDrafts.delete(task.id); evidence.dataset.dirty = "false"; await loadBoard(); await refreshTask(); toast("Task accepted with evidence."); }
+      catch (err) { toast(err.message); }
+      finally {
+        button.dataset.submitting = "false";
+        button.disabled = panelTask?.id !== task.id || panelTask.status !== "review";
+        if (state.task === task.id) await refreshTask();
+      }
+    } }, "Accept as done");
+    accept.replaceChildren(el("div", { class: "section acceptance-section" }, el("h3", {}, "Acceptance evidence"), evidence, el("div", { class: "acceptance-actions" }, el("small", {}, task.status === "review" ? "Human acceptance checks the current task, children and prerequisites." : "Move completed work to Review before accepting it."), button)));
+  }
+  const acceptButton = accept.querySelector("button");
+  if (acceptButton) acceptButton.disabled = task.status !== "review" || acceptButton.dataset.submitting === "true";
+  const acceptanceHint = accept.querySelector(".acceptance-actions small");
+  if (acceptanceHint) acceptanceHint.textContent = task.status === "review" ? "Human acceptance checks the current task, children and prerequisites." : "Move completed work to Review before accepting it.";
+  setTaskTab(state.taskTab);
+}
+function renderTaskPlan(task, plan) {
+  const form = el("form", { id: "task-plan-form", "data-task-id": task.id, class: "task-plan-form" });
+  const parentChoice = el("select", { class: "field", name: "parent_id" }, el("option", { value: "" }, "No parent — top-level task"), ...state.board.tasks.filter((t) => t.project === task.project && t.id !== task.id).map((t) => el("option", { value: t.id }, `${key(t)} · ${taskTitle(t)}`)));
+  parentChoice.value = plan.parent_id || "";
+  form.append(el("div", { class: "form-grid" }, inputField("Owner", "owner", plan.owner), el("label", { class: "form-field" }, el("span", {}, "Parent task"), parentChoice)),
+    inputField("Deliverable", "deliverable", plan.deliverable, "textarea"), inputField("Acceptance checklist / evidence criteria", "acceptance", plan.acceptance, "textarea"), inputField("Allowed scope", "allowed_scope", plan.allowed_scope, "textarea"), inputField("Resource / attempt budget", "budget", plan.budget),
+    el("div", { class: "form-grid dates-grid" }, inputField("Planned start", "planned_start", plan.planned_start, "date"), inputField("Planned end", "planned_end", plan.planned_end, "date"), inputField("Due date", "due_date", plan.due_date, "date"), inputField("Estimate (minutes)", "estimate", plan.estimate_seconds == null ? "" : plan.estimate_seconds / 60, "number")),
+    inputField("Required prerequisites", "depends_on", (plan.depends_on || []).map((id) => { const t = taskById(id); return t ? key(t) : String(id); }).join(", "), "text", "Task keys or numeric IDs, separated by commas. Each prerequisite must be satisfied."),
+    inputField("Selected context links", "context_links", (plan.context_links || []).map((l) => `${l.kind} | ${l.label} | ${l.path}`).join("\n"), "textarea", "One per line: kind | label | path. References do not execute or read files automatically."),
+    el("div", { class: "form-save-row" }, el("span", { class: "form-save-hint" }, "Planning fields save together."), el("button", { class: "btn primary", type: "submit" }, "Save task plan")));
+  if (childrenOf(task.id).length) {
+    const estimateInput = form.elements.namedItem("estimate");
+    if (estimateInput) { estimateInput.disabled = true; estimateInput.value = ""; estimateInput.closest("label")?.append(el("small", {}, "Summary effort is derived from leaf tasks.")); }
+  }
+  form.addEventListener("input", () => { form.dataset.dirty = "true"; }); form.addEventListener("change", () => { form.dataset.dirty = "true"; });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = form.querySelector("button[type=submit]"); button.disabled = true;
+    try {
+      const tokens = formValue(form, "depends_on").split(",").map((v) => v.trim()).filter(Boolean);
+      const depends = tokens.map((token) => { const match = token.match(/(?:^|#)(\d+)$/); if (!match) throw new Error(`Invalid prerequisite: ${token}`); return Number(match[1]); });
+      const estimate = formValue(form, "estimate"); if (estimate && (!Number.isFinite(Number(estimate)) || Number(estimate) < 0)) throw new Error("Estimate must be non-negative.");
+      const links = formValue(form, "context_links").split("\n").filter((line) => line.trim()).map((line) => { const [kind, label, ...path] = line.split("|").map((v) => v.trim()); if (!kind || !label || !path.join("|")) throw new Error("Context links need kind | label | path."); return { kind, label, path: path.join("|") }; });
+      const next = { ...planFor(task.id), parent_id: formValue(form, "parent_id") ? Number(formValue(form, "parent_id")) : null, depends_on: depends, estimate_seconds: estimate === "" ? null : Math.round(Number(estimate) * 60), context_links: links };
+      for (const field of ["owner", "deliverable", "acceptance", "allowed_scope", "budget"]) next[field] = formValue(form, field);
+      for (const field of ["planned_start", "planned_end", "due_date"]) next[field] = formValue(form, field) || null;
+      await api("PUT", `/tasks/${task.id}/plan`, next); form.dataset.dirty = "false"; await loadBoard(); await refreshTask(); toast("Task plan saved.");
+    } catch (err) { toast(err.message); button.disabled = false; }
+  });
+  $("#task-plan-editor").replaceChildren(form);
+}
+function renderSubtasks(task, context) {
+  const children = context.children || [], dependencies = context.dependencies || [];
+  const count = children.filter((child) => child.accepted).length;
+  const childWindow = context.context_window?.children;
+  const partialChildren = !!childWindow?.truncated;
+  const progress = partialChildren ? `${count} accepted among ${children.length} loaded / ${childWindow.total} children` : `${count} of ${children.length} accepted`;
+  const form = el("form", { class: "add-subtask-form" }, el("input", { class: "field", name: "title", placeholder: "A concrete subtask deliverable", "aria-label": "New subtask title", required: true }), el("input", { class: "field", name: "description", placeholder: "Description (optional)", "aria-label": "New subtask description" }), el("button", { class: "btn quiet", type: "submit" }, "+ Add subtask"));
+  form.addEventListener("submit", async (event) => { event.preventDefault(); const button = form.querySelector("button"); button.disabled = true; try { await api("POST", `/tasks/${task.id}/subtasks`, { title: formValue(form, "title"), description: formValue(form, "description") }); await loadBoard(); await refreshTask(); toast("Subtask created. Required-child acceptance is preserved."); } catch (err) { toast(err.message); button.disabled = false; } });
+  const oldForm = $("#task-subtasks").querySelector(".add-subtask-form");
+  if (oldForm && oldForm.contains(document.activeElement)) return;
+  $("#task-subtasks").replaceChildren(sectionHead("Subtasks", el("span", { class: "denominator" }, progress)),
+    ...(partialChildren ? [el("p", { class: "workspace-subtitle" }, "This context contains only part of the child list. Loaded-child acceptance is not the full parent rollup.")] : []),
+    ...children.map(({ task: child, accepted }) => el("div", { class: "subtask-row" }, icon(accepted ? "check" : "board"), taskButton(child), el("span", { class: "status-pill" }, child.status))),
+    ...(!children.length ? [el("p", { class: "workspace-subtitle" }, "No subtasks recorded. Add real child tasks to divide the deliverable.")] : []), form,
+    sectionHead("Dependencies"), ...dependencies.map(({ task: prerequisite, accepted }) => el("div", { class: "subtask-row" }, icon(accepted ? "check" : "clock"), taskButton(prerequisite), el("span", { class: "status-pill" }, accepted ? "Satisfied" : "Required"))), ...(!dependencies.length ? [el("p", { class: "workspace-subtitle" }, "None recorded. Edit prerequisites in Overview.")] : []));
+}
+function renderContextDetail(task, context) {
+  const profile = context.profile || profileFor(task.project), plan = context.plan || planFor(task.id);
+  const lineage = [...(context.ancestors || []).map((a) => key(a.task)), key(task)].join(" → ");
+  $("#task-context-detail").replaceChildren(sectionHead("Selected task context", el("button", { class: "btn primary", onclick: () => copyContext(context) }, "Copy agent brief")), el("p", { class: "context-lineage" }, `${task.project} → ${lineage}`),
+    ...[["Source", [profile.source_path, profile.source_revision].filter(Boolean).join(" · ") || "Not recorded"], ["Project instructions", (profile.instructions || []).join("\n") || "None selected"], ["Relevant skills", (profile.skills || []).join("\n") || "None selected"], ["Dated memory references", (profile.memories || []).join("\n") || "None selected"]].map(([label, value]) => el("section", { class: "context-block" }, el("h3", {}, label), el("p", {}, value))),
+    el("section", { class: "context-block" }, el("h3", {}, "Task-specific references"), ...(plan.context_links || []).map((link) => el("p", {}, el("strong", {}, link.label + " · "), el("code", {}, link.path))), ...(!(plan.context_links || []).length ? [el("p", {}, "No task-specific references selected.")] : [])),
+    el("p", { class: "workspace-subtitle" }, "This packet contains selected task/project references. It does not load files or grant execution authority."));
+}
+async function copyContext(context) {
+  const text = JSON.stringify(context, null, 2);
+  try { await navigator.clipboard.writeText(text); }
+  catch { const area = el("textarea", { style: "position:fixed;opacity:0" }); area.value = text; document.body.append(area); area.select(); document.execCommand("copy"); area.remove(); }
+  toast("Selected agent context copied.");
+}
+function renderTaskActivity(task, context) {
+  const events = context.events || [], entries = mergeTimeEntries(context.time_entries || [], (state.harness.active_timers || []).filter((entry) => entry.task_id === task.id));
+  $("#task-activity").replaceChildren(sectionHead("Recorded task events"), ...events.slice().reverse().map((event) => el("div", { class: "activity-row" }, icon(event.kind === "accepted" ? "check" : "clock"), el("div", {}, el("strong", {}, event.kind.replace(/_/g, " ")), event.to_status ? el("p", {}, `${event.from_status || "—"} → ${event.to_status}`) : null, el("small", {}, new Date(event.at).toLocaleString())))), ...(!events.length ? [el("p", { class: "workspace-subtitle" }, "No events recorded for this task yet. Old updates are not fabricated as history.")] : []), sectionHead("Time entries", el("button", { class: "btn quiet", onclick: () => showTimeDialog(task) }, "Add entry")), ...entries.map(timeEntryRow), ...(!entries.length ? [el("p", { class: "workspace-subtitle" }, "No time entries recorded.")] : []));
+}
+function renderTaskAside(task, context) {
+  const profile = context.profile || profileFor(task.project), plan = context.plan || planFor(task.id), entries = context.time_entries || [], timer = runningTimer(), mine = timer?.task_id === task.id;
+  const card = (title, ...content) => el("section", { class: "context-card" }, el("h3", {}, title), ...content);
+  const source = [profile.source_path, profile.source_revision].filter(Boolean).join(" · ");
+  const lessons = (plan.context_links || []).filter((link) => /lesson|learning|receipt/i.test(link.kind));
+  $("#task-context-aside").replaceChildren(
+    card("Agent context", el("small", {}, "Context lineage"), el("p", { class: "context-lineage" }, [task.project, ...(context.ancestors || []).map((a) => key(a.task)), key(task)].join(" / ")), el("small", {}, "Source"), el("p", { class: "source-reference" }, source || "Source not recorded"),
+      el("small", {}, "Relevant skills"), el("div", { class: "context-chips" }, ...(profile.skills || []).map((skill) => el("span", {}, skill)), ...(!(profile.skills || []).length ? [el("span", {}, "None selected")] : [])), el("small", {}, "Project memory"), ...(profile.memories || []).map((memory) => el("p", { class: "memory-reference" }, memory)), ...(!(profile.memories || []).length ? [el("p", { class: "workspace-subtitle" }, "No dated memory selected.")] : []), el("button", { class: "btn primary full-width", onclick: () => copyContext(context) }, icon("book"), "Prepare agent brief"), el("small", {}, "Copies the selected context; no agent is started.")),
+    card("Schedule & time", el("dl", { class: "context-facts" }, ...[["Start", plan.planned_start || "Not scheduled"], ["End", plan.planned_end || "Not scheduled"], ["Due", plan.due_date || "Not scheduled"], ["Estimate", plan.estimate_seconds == null ? "Not set" : shortDuration(plan.estimate_seconds)], ["Logged human work", recordedSecondsForTasks([task.id]) ? shortDuration(recordedSecondsForTasks([task.id])) : "No entries"]].flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])), el("div", { class: "context-action-row" }, el("button", { class: "btn quiet", onclick: () => showSchedule(task) }, icon("calendar"), "Schedule task"), el("button", { class: "btn quiet", onclick: () => showTimeDialog(task) }, icon("clock"), "Add time entry")),
+      el("button", { class: "btn timer-button full-width", disabled: !!timer && !mine, onclick: () => mine ? stopTimer(timer) : startTimer(task) }, icon(mine ? "stop" : "play"), mine ? el("span", { "data-timer-id": timer.id }, shortDuration(elapsedSeconds(timer)) + " · Stop timer") : timer ? "Another task has the human timer" : "Start timer")),
+    card("Learning loop", el("p", { class: "learning-steps" }, "Retrieve → Apply → Verify → Capture → Review reuse"), ...lessons.map((link) => el("p", { class: "memory-reference" }, `${link.label}: ${link.path}`)), ...(!lessons.length ? [el("p", { class: "context-note" }, "No lesson reference recorded for this task.")] : []), el("p", { class: "workspace-subtitle" }, "Knowledge remains in its source skill or checkpoint. A saved reference does not establish learning benefit."), el("div", { class: "execution-note" }, el("small", {}, "Task status"), el("p", {}, statusIcon(task.status), task.status))));
+}
+setInterval(() => {
+  if (document.hidden) return;
+  const entries = new Map(timeEntries().filter((entry) => !entry.ended_at).map((entry) => [String(entry.id), entry]));
+  document.querySelectorAll("[data-timer-id]").forEach((node) => { const entry = entries.get(node.dataset.timerId); if (entry) node.textContent = shortDuration(elapsedSeconds(entry)) + (node.closest(".timer-button") ? " · Stop timer" : " running"); });
+}, 1000);
+
+// ---------- theme and responsive navigation ----------
+function themePreference() { return localStorageGet("kanzo.theme") || "system"; }
+function applyTheme(choice = themePreference()) {
+  const dark = choice === "dark" || (choice === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  $("#theme-label").textContent = `Theme: ${choice}`;
+  $("#theme-toggle").setAttribute("aria-label", `Color theme ${choice}; click to change`);
+}
+$("#theme-toggle").addEventListener("click", () => { const choices = ["system", "light", "dark"], next = choices[(choices.indexOf(themePreference()) + 1) % choices.length]; try { localStorage.setItem("kanzo.theme", next); } catch {} applyTheme(next); });
+const colorQuery = matchMedia("(prefers-color-scheme: dark)");
+if (colorQuery.addEventListener) colorQuery.addEventListener("change", () => { if (themePreference() === "system") applyTheme(); });
+else if (colorQuery.addListener) colorQuery.addListener(() => { if (themePreference() === "system") applyTheme(); });
+function closeSidebar() { document.body.classList.remove("sidebar-open"); $("#sidebar-scrim").hidden = true; $("#sidebar-toggle").setAttribute("aria-expanded", "false"); }
+$("#sidebar-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("sidebar-open"); document.body.classList.toggle("sidebar-open", open); $("#sidebar-scrim").hidden = !open; $("#sidebar-toggle").setAttribute("aria-expanded", String(open)); });
+$("#sidebar-scrim").addEventListener("click", closeSidebar);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSidebar(); });
+applyTheme();
+
 checkUpdate();
 setInterval(checkUpdate, 24 * 60 * 60 * 1000);
 loadSyncRemote();
@@ -1355,6 +1897,7 @@ setInterval(() => {
 
 {
   const { slug, task } = readHash();
-  state.project = slug || localStorageGet("kanzo.project") || "all";
+  state.project = slug || "@dashboard";
+  if (state.project === "@review" || state.project === "@archive") state.scope = state.project.slice(1);
   loadBoard().then(() => { if (task) openTask(task); });
 }

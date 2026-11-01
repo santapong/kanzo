@@ -127,6 +127,15 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
+        .route("/api/harness", get(harness))
+        .route("/api/projects/{slug}/profile", get(project_profile).put(save_project_profile))
+        .route("/api/tasks/{id}/plan", get(task_plan).put(save_task_plan))
+        .route("/api/tasks/{id}/context", get(task_context))
+        .route("/api/tasks/{id}/subtasks", post(create_subtask))
+        .route("/api/tasks/{id}/timer", post(start_timer))
+        .route("/api/tasks/{id}/time", post(manual_time))
+        .route("/api/tasks/{id}/accept", post(accept_task))
+        .route("/api/time/{id}/stop", post(stop_timer))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
         .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
@@ -229,6 +238,93 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
 }
 
 type Shared = State<Arc<Home>>;
+
+// The same Store methods serve HTTP and MCP; eligibility, dependencies and timers
+// are checked in the transaction rather than trusting a particular client.
+async fn harness(State(home): Shared) -> Response {
+    with_store(home, |_, s| s.harness_snapshot()).await
+}
+
+async fn project_profile(State(home): Shared, Path(slug): Path<String>) -> Response {
+    with_store(home, move |_, s| s.project_profile(&slug)).await
+}
+
+async fn save_project_profile(
+    State(home): Shared,
+    Path(slug): Path<String>,
+    Json(p): Json<crate::planning::ProjectProfile>,
+) -> Response {
+    with_store(home, move |_, s| s.save_project_profile(&slug, p)).await
+}
+
+async fn task_plan(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.task_plan(id)).await
+}
+
+async fn save_task_plan(
+    State(home): Shared,
+    Path(id): Path<i64>,
+    Json(p): Json<crate::planning::TaskPlan>,
+) -> Response {
+    with_store(home, move |_, s| s.save_task_plan(id, p)).await
+}
+
+async fn task_context(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.task_context(id)).await
+}
+
+#[derive(Deserialize)]
+struct SubtaskRequest {
+    title: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn create_subtask(State(home): Shared, Path(id): Path<i64>, Json(p): Json<SubtaskRequest>) -> Response {
+    with_store(home, move |_, s| s.create_subtask(id, &p.title, &p.description)).await
+}
+
+#[derive(Deserialize)]
+struct TimerRequest {
+    actor: String,
+    request_id: String,
+}
+
+async fn start_timer(State(home): Shared, Path(id): Path<i64>, Json(p): Json<TimerRequest>) -> Response {
+    with_store(home, move |_, s| s.start_timer(id, &p.actor, &p.request_id)).await
+}
+
+#[derive(Deserialize)]
+struct StopRequest {
+    actor: String,
+}
+
+async fn stop_timer(State(home): Shared, Path(id): Path<i64>, Json(p): Json<StopRequest>) -> Response {
+    with_store(home, move |_, s| s.stop_timer(id, &p.actor)).await
+}
+
+#[derive(Deserialize)]
+struct ManualTimeRequest {
+    actor: String,
+    seconds: i64,
+    #[serde(default)]
+    note: String,
+    request_id: String,
+}
+
+async fn manual_time(State(home): Shared, Path(id): Path<i64>, Json(p): Json<ManualTimeRequest>) -> Response {
+    with_store(home, move |_, s| s.add_manual_time(id, &p.actor, p.seconds, &p.note, &p.request_id)).await
+}
+
+#[derive(Deserialize)]
+struct AcceptanceRequest {
+    reviewer: String,
+    evidence: String,
+}
+
+async fn accept_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<AcceptanceRequest>) -> Response {
+    with_store(home, move |_, s| s.accept_task(id, &p.reviewer, &p.evidence)).await
+}
 
 /// Runs `f` with a fresh connection on a blocking thread and answers with JSON.
 async fn with_store<T: Serialize + Send + 'static>(

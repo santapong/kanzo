@@ -9,14 +9,16 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 /// The oldest schema version whose Kanzo can still use a database at the latest one.
 /// Adding a table or a column with a default leaves older versions working, so a board
 /// synced from a newer Kanzo still opens in an older one. Raise it to the new version
-/// only for a migration that older code can't live with, like a renamed column.
-const COMPATIBLE_FROM: usize = 4;
+/// when older writers cannot safely preserve its data or policy. Schema 7 needs
+/// planning transition gates, which stock writers do not enforce.
+const COMPATIBLE_FROM: usize = 7;
 
 /// Schema migrations, applied in order. Index + 1 is the `schema_version` they lead to.
 const MIGRATIONS: &[&str] = &[
@@ -49,6 +51,8 @@ const MIGRATIONS: &[&str] = &[
      CREATE TRIGGER images_delete AFTER DELETE ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
     // 6: tasks for a person, which agents leave alone.
     "ALTER TABLE tasks ADD COLUMN human INTEGER NOT NULL DEFAULT 0;",
+    // 7: planning/organization must share transition gates with every writer.
+    include_str!("planning.sql"),
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -170,7 +174,7 @@ const STATUSES: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const BACKLOG: &str = "backlog";
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     statuses: Vec<String>,
     /// Held while the connection is open; declared after `conn` so it is released after it closes.
     _lock: Option<std::fs::File>,
@@ -180,6 +184,14 @@ impl Store {
     /// Opens the database. `lock` is kept until the store is dropped (see `Home::store`).
     pub fn open(path: &Path, lock: Option<std::fs::File>) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // A compatibility marker, not an authorization boundary. Migration 7
+        // write triggers keep already-running stock clients from bypassing gates.
+        conn.create_scalar_function(
+            "kanzo_harness_writer",
+            0,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| Ok(7_i64),
+        )?;
         // The board and any number of agents share this file; wait instead of failing.
         conn.busy_timeout(Duration::from_secs(5))?;
         // Per connection, not stored in the file. Also turns a WAL database from an
@@ -225,7 +237,7 @@ impl Store {
 
     /// Runs `f` in an immediate transaction, so concurrent writers queue up
     /// on the busy timeout instead of failing halfway.
-    fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
         match f(&self.conn) {
             Ok(v) => {
@@ -382,11 +394,15 @@ impl Store {
         }
         let created = self.write(|c| {
             c.execute("INSERT INTO projects (slug, name) VALUES (?1, ?2)", params![slug, name])?;
+            let project_id = c.last_insert_rowid();
+            // Explicit new-project creation is an active intake decision. Migrated
+            // projects without a profile default to review until classified.
+            c.execute(
+                "INSERT INTO project_profiles(project_id,profile_json) VALUES(?1,'{\"visibility\":\"active\"}')",
+                [project_id],
+            )?;
             if let Some(r) = &repo {
-                c.execute(
-                    "INSERT INTO project_repos (repo, project_id) VALUES (?1, ?2)",
-                    params![r, c.last_insert_rowid()],
-                )?;
+                c.execute("INSERT INTO project_repos (repo, project_id) VALUES (?1, ?2)", params![r, project_id])?;
             }
             Ok(())
         });
@@ -588,7 +604,7 @@ impl Store {
         }
     }
 
-    fn end_of_column(c: &Connection, status: &str, except: i64) -> Result<f64> {
+    pub(crate) fn end_of_column(c: &Connection, status: &str, except: i64) -> Result<f64> {
         let max: Option<f64> = c.query_row(
             "SELECT max(position) FROM tasks WHERE status = ?1 AND id <> ?2",
             params![status, except],
@@ -620,7 +636,9 @@ impl Store {
                 "INSERT INTO tasks (project_id, title, description, status, position) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![project_id, title, description.trim(), status, position],
             )?;
-            Ok(c.last_insert_rowid())
+            let id = c.last_insert_rowid();
+            self.transition_guard(c, id, status, false)?;
+            Ok(id)
         })?;
         self.get_task(id)
     }
@@ -632,6 +650,11 @@ impl Store {
         }
         self.write(|c| {
             let current = self.get_task(id)?;
+            let semantic = title.as_ref().is_some_and(|t| t != &current.title)
+                || patch.description.as_ref().is_some_and(|d| d.trim() != current.description)
+                || patch
+                    .project_id
+                    .is_some_and(|p| self.find_project(&current.project).map(|v| v.id != p).unwrap_or(true));
             if let Some(title) = title {
                 c.execute(
                     &format!("UPDATE tasks SET title = ?1, updated_at = {NOW} WHERE id = ?2"),
@@ -639,6 +662,9 @@ impl Store {
                 )?;
             }
             if let Some(p) = patch.project_id {
+                if self.find_project(&current.project)?.id != p {
+                    self.check_project_move(c, id)?;
+                }
                 c.execute(
                     &format!("UPDATE tasks SET project_id = ?1, updated_at = {NOW} WHERE id = ?2 AND project_id <> ?1"),
                     params![p, id],
@@ -662,14 +688,22 @@ impl Store {
                     params![d.trim(), id],
                 )?;
             }
-            if let Some(s) = &patch.status
-                && *s != current.status
-            {
-                let position = Self::end_of_column(c, s, id)?;
-                c.execute(
-                    &format!("UPDATE tasks SET status = ?1, position = ?2, updated_at = {NOW} WHERE id = ?3"),
-                    params![s, position, id],
-                )?;
+            if semantic {
+                self.touch_semantic(c, id)?;
+            }
+            if let Some(s) = &patch.status {
+                self.transition_guard(c, id, s, false)?;
+                let fresh = self.get_task(id)?;
+                if *s != fresh.status {
+                    if fresh.status == "done" {
+                        self.invalidate_acceptance(c, id, "completed task reopened")?;
+                    }
+                    let position = Self::end_of_column(c, s, id)?;
+                    c.execute(
+                        &format!("UPDATE tasks SET status = ?1, position = ?2, updated_at = {NOW} WHERE id = ?3"),
+                        params![s, position, id],
+                    )?;
+                }
             }
             Ok(())
         })?;
@@ -681,6 +715,10 @@ impl Store {
         self.check_status(status)?;
         self.write(|c| {
             let current = self.get_task(id)?;
+            self.transition_guard(c, id, status, false)?;
+            if current.status == "done" && status != "done" {
+                self.invalidate_acceptance(c, id, "completed task reopened")?;
+            }
             let before = before.filter(|b| *b != id);
             // The task to go above, with its position, if it's in that column.
             let anchor: Option<(i64, f64)> = match before {
@@ -742,14 +780,24 @@ impl Store {
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
         let [from, to, ..] = STATUSES;
         let id = self.write(|c| {
-            let id: Option<i64> = c
-                .query_row(
-                    "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
-                     ORDER BY position LIMIT 1",
-                    params![from, project_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let mut candidates = c.prepare(
+                "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
+                     ORDER BY position",
+            )?;
+            let ids = candidates
+                .query_map(params![from, project_id], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut id = None;
+            for candidate in ids {
+                match self.transition_guard(c, candidate, to, false) {
+                    Ok(()) => {
+                        id = Some(candidate);
+                        break;
+                    }
+                    Err(Error::Invalid(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
             if let Some(id) = id {
                 let position = Self::end_of_column(c, to, id)?;
                 c.execute(
@@ -959,7 +1007,7 @@ fn squash(s: &str) -> String {
     out
 }
 
-fn clean_title(title: &str) -> Result<String> {
+pub(crate) fn clean_title(title: &str) -> Result<String> {
     let title = squash(title);
     if title.is_empty() {
         return Err(Error::Invalid("task title is empty".into()));

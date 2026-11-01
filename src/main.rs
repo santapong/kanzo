@@ -1,6 +1,7 @@
 mod export;
 mod home;
 mod mcp;
+mod planning;
 mod service;
 mod store;
 mod sync;

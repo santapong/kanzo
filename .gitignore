@@ -1,4 +1,12 @@
 /target
+/local-data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/.kanzo-evidence
+__pycache__/
+*.pyc
 
 # macOS metadata (AppleDouble files appear on exFAT drives)
 ._*
