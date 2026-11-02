@@ -24,4 +24,4 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
-      - run: node --check src/app.js && node --test tests/theme.test.cjs
+      - run: node --check src/app.js && node --test tests/*.test.cjs

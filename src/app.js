@@ -28,6 +28,7 @@ const state = {
   ownerFilter: "",
   scheduleFilter: "",
   filtersExpanded: false,
+  unscheduledExpanded: false,
   weekOffset: 0,
   monthOffset: 0,
   taskTab: "overview",
@@ -43,6 +44,47 @@ const state = {
   menu: null,            // slug of the project whose "⋯" menu is open, or "settings"
 };
 const acceptanceDrafts = new Map();
+const paginationPages = new Map(), paginationSizes = new Map();
+let paginationSignature = "";
+
+function paginationWindow(name, items) {
+  const signature = JSON.stringify([state.project, state.scope, state.projectQuery, state.taskQuery,
+    state.statusFilter, state.typeFilter, state.tagFilter, state.ownerFilter, state.scheduleFilter,
+    state.weekOffset, state.monthOffset]);
+  if (signature !== paginationSignature) { paginationPages.clear(); paginationSignature = signature; }
+  const key = `${state.project}:${state.scope}:${name}`;
+  const page = window.KanzoPagination.pageWindow(items.length, paginationPages.get(key) || 1, paginationSizes.get(key) || 10);
+  paginationPages.set(key, page.page);
+  return { ...page, key, items: items.slice(page.start, page.end) };
+}
+
+function changePage(page, value, action, size) {
+  paginationPages.set(page.key, value);
+  if (size) { paginationSizes.set(page.key, size); paginationPages.set(page.key, 1); }
+  render();
+  const nav = document.querySelector(`.pagination[data-page-key="${CSS.escape(page.key)}"]`);
+  const cards = nav?.closest(".column")?.querySelector(".cards");
+  if (cards) cards.scrollTop = 0;
+  else nav?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const target = nav?.querySelector(`[data-page-action="${action}"]:not(:disabled)`) || nav?.querySelector("select");
+  target?.focus({ preventScroll: true });
+}
+
+function renderPager(page, label) {
+  const summary = `${page.from}–${page.to} of ${page.total}`;
+  const sizes = el("select", { class: "pagination-size", "aria-label": `${label} items per page`,
+    onchange: (event) => changePage(page, 1, "size", Number(event.target.value)) },
+    ...[10, 25, 50].map((size) => el("option", { value: size }, `${size} per page`)));
+  sizes.value = String(page.pageSize);
+  return el("nav", { class: "pagination", "aria-label": `${label} pagination`, "data-page-key": page.key },
+    el("span", { class: "pagination-summary", role: "status" }, summary),
+    el("div", { class: "pagination-controls" },
+      el("button", { class: "btn quiet", "data-page-action": "previous", disabled: !page.hasPrevious,
+        "aria-label": `Previous ${label} page`, onclick: () => changePage(page, page.page - 1, "previous") }, "Previous"),
+      el("span", { class: "pagination-page" }, `Page ${page.page} of ${page.pageCount}`),
+      el("button", { class: "btn quiet", "data-page-action": "next", disabled: !page.hasNext,
+        "aria-label": `Next ${label} page`, onclick: () => changePage(page, page.page + 1, "next") }, "Next"), sizes));
+}
 
 // ---------- helpers ----------
 
@@ -429,6 +471,9 @@ function renderTaskFilters() {
   $("#filter-empty").hidden = true;
   if (hidden) return;
   const source = taskScopeRows();
+  let reorderNote = $("#board-reorder-note");
+  if (!reorderNote) { reorderNote = el("p", { id: "board-reorder-note", class: "board-reorder-note" }, "Clear task filters to reorder cards. Status changes remain available in task details."); root.append(reorderNote); }
+  reorderNote.hidden = !hasTaskFilters() || (isPortfolioRoute(state.project) && state.project !== "all");
   root.classList.toggle("filters-open", state.filtersExpanded);
   const advancedCount = [state.statusFilter, state.typeFilter, state.tagFilter, state.ownerFilter, state.scheduleFilter].filter(Boolean).length;
   $("#filters-toggle").textContent = advancedCount ? `Filters (${advancedCount})` : "Filters";
@@ -707,7 +752,10 @@ $("#category-form").addEventListener("submit", async (e) => {
   } catch (err) { $("#category-error").textContent = err.message; $("#category-error").hidden = false; }
   finally { button.disabled = false; }
 });
-$("#project-filter").addEventListener("input", (e) => { state.projectQuery = e.target.value; renderNav(); });
+$("#project-filter").addEventListener("input", (e) => {
+  state.projectQuery = e.target.value; renderNav();
+  if (["@projects", "@review", "@archive"].includes(state.project)) renderProjectList();
+});
 
 async function deleteProject(p) {
   const tasks = p.total ? ` and its ${p.total} task${p.total > 1 ? "s" : ""}, with their comments` : "";
@@ -746,7 +794,7 @@ function renderColumns() {
           statusIcon(status), status,
           el("span", { class: "count" }),
           collapsible ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setCollapsed(status, !isCollapsed(status)); } }) : null),
-        el("div", { class: "cards" }),
+        el("div", { class: "cards" }), el("div", { class: "column-pagination" }),
       );
       wireDrop(col, col.querySelector(".cards"), status);
       if (collapsible) col.addEventListener("click", () => { if (isCollapsed(status)) setCollapsed(status, false); });
@@ -769,7 +817,10 @@ function renderColumns() {
     const more = hidden
       ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; loadBoard(); } }, `Show ${hidden} older`)
       : null;
-    col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.map((t) => card(t, all)));
+    const page = paginationWindow(`column:${status}`, mine);
+    col._pagination = { items: mine, window: page };
+    col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...page.items.map((t) => card(t, all)));
+    col.querySelector(".column-pagination").replaceChildren(renderPager(page, status));
   }
 }
 
@@ -816,7 +867,7 @@ function plainText(md) {
 }
 
 function card(t, showProject) {
-  const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
+  const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: String(!hasTaskFilters()), "data-id": t.id,
                            onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
@@ -827,6 +878,7 @@ function card(t, showProject) {
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
     t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("button", { type: "button", class: "tag", title: `Filter by tag: ${tag}`, onclick: (e) => { e.stopPropagation(); chooseTag(tag); } }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
+    if (hasTaskFilters()) { e.preventDefault(); return; }
     state.dragging = t.id;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", String(t.id));
@@ -851,7 +903,7 @@ function wireDrop(col, list, status) {
     return cards.find((c) => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; }) || null;
   };
   col.addEventListener("dragover", (e) => {
-    if (!state.dragging) return;
+    if (!state.dragging || hasTaskFilters()) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     const after = cardAfter(e.clientY);
@@ -864,13 +916,15 @@ function wireDrop(col, list, status) {
     e.preventDefault();
     const id = state.dragging;
     if (!id) return;
+    if (hasTaskFilters()) { line.remove(); toast("Clear task filters before reordering cards."); return; }
     const after = cardAfter(e.clientY);
     const dragged = document.querySelector(`.card[data-id="${id}"]`);
     if (dragged) list.insertBefore(dragged, line.parentNode === list ? line : null);
     line.remove();
     state.dropped = true;
     if (fresh === id) fresh = null;
-    const before = after ? Number(after.dataset.id) : null;
+    const before = after ? Number(after.dataset.id) : col.classList.contains("collapsed") ? null
+      : window.KanzoPagination.nextAfterPage(col._pagination?.items || [], col._pagination?.window || { end: 0 }, id);
     try {
       await api("POST", `/tasks/${id}/move`, { status, before });
       if (state.task === id) refreshTask();
@@ -1696,7 +1750,8 @@ function renderPlanningDashboard() {
   const days = weekDays(), scheduled = allActiveTasks().filter((t) => { const p = planFor(t.id); return p.planned_start || p.planned_end || p.due_date; });
   const agenda = el("section", { class: "workspace-card weekly-agenda" }, sectionHead("Weekly agenda"), el("p", { class: "workspace-subtitle" }, `${displayDay(days[0])} – ${displayDay(days[6])} · Asia/Bangkok`),
     ...days.map((day) => { const mine = scheduled.filter((t) => { const p = planFor(t.id); return scheduleOccurs(p, day); });
-      return el("div", { class: "agenda-day" }, el("div", { class: "agenda-date" }, el("strong", {}, displayDay(day, { weekday: "short", day: undefined, month: undefined })), el("small", {}, displayDay(day))), el("div", { class: "agenda-tasks" }, ...mine.map((t) => el("div", {}, scheduleTaskButton(t), el("small", {}, planFor(t.id).due_date === day ? "Due date" : "Planned · all day"))), ...(!mine.length ? [el("span", { class: "agenda-empty" }, "—")] : []))); }));
+      return el("div", { class: "agenda-day" }, el("div", { class: "agenda-date" }, el("strong", {}, displayDay(day, { weekday: "short", day: undefined, month: undefined })), el("small", {}, displayDay(day))), el("div", { class: "agenda-tasks" }, ...mine.slice(0, 3).map((t) => el("div", {}, scheduleTaskButton(t), el("small", {}, planFor(t.id).due_date === day ? "Due date" : "Planned · all day"))),
+        ...(mine.length > 3 ? [el("button", { class: "text-button agenda-more", onclick: () => setProject("@timeline") }, `+${mine.length - 3} more · View full week`)] : []), ...(!mine.length ? [el("span", { class: "agenda-empty" }, "—")] : []))); }));
   const timeCard = el("section", { class: "workspace-card time-summary" }, sectionHead("Time tracking"),
     logged > 0 || entries.length ? el("div", { class: "time-total" }, icon("clock"), el("strong", {}, shortDuration(logged)), el("span", {}, "Recorded human effort")) : emptyState("No entries yet", "Estimates and actual time are separate.", null),
     el("button", { class: "btn primary", onclick: () => showTimeDialog() }, "Add time entry"));
@@ -1706,18 +1761,27 @@ function timelinePanel(compact) {
   const days = weekDays(), tasks = allActiveTasks();
   const scheduled = tasks.filter((t) => days.some((day) => scheduleOccurs(planFor(t.id), day)));
   const unscheduled = activeLeaves().filter((t) => { const p = planFor(t.id); return !p.planned_start && !p.planned_end && !p.due_date; });
+  const page = compact ? null : paginationWindow("timeline", scheduled), shown = compact ? scheduled.slice(0, 6) : page.items;
   const grid = el("div", { class: "timeline-grid", role: "table", "aria-label": "Planned tasks this week" }, el("div", { class: "timeline-label timeline-head", role: "columnheader" }, "Task"), ...days.map((d) => el("div", { class: "timeline-head", role: "columnheader" }, displayDay(d, { weekday: "short", month: undefined }))));
-  for (const t of scheduled) {
-    const p = planFor(t.id), start = p.planned_start || p.due_date || p.planned_end, end = p.planned_end || p.due_date || p.planned_start;
+  for (const t of shown) {
+    const p = planFor(t.id);
     grid.append(el("div", { class: "timeline-label", role: "rowheader" }, scheduleTaskButton(t)));
     for (const day of days) grid.append(el("div", { class: "timeline-cell", role: "cell" }, scheduleOccurs(p, day) ? el("button", { class: "timeline-bar" + (p.due_date === day ? " due" : ""), style: `--project-color:${projectColor(t.project)}`, "aria-label": `${childrenOf(t.id).length ? "Summary · " : ""}${taskTitle(t)}: ${displayDay(day)}`, onclick: () => showSchedule(t) }, p.due_date === day && !p.planned_start ? "◆" : "") : null));
   }
   if (!scheduled.length) grid.append(el("div", { class: "timeline-empty" }, "No tasks scheduled for this week. Add dates to show the plan here."));
-  const tray = el("div", { class: "unscheduled-tray" }, icon("list"), el("div", {}, el("strong", {}, `Unscheduled leaf tasks · ${unscheduled.length}`), el("p", {}, "These tasks do not have dates yet. Schedule them when you are ready.")), el("button", { class: "btn quiet", onclick: () => { if (compact) setProject("@timeline"); else $("#unscheduled-list").hidden = !$("#unscheduled-list").hidden; } }, compact ? "View unscheduled ›" : "Show / hide tasks"));
-  const panel = el("section", { class: "workspace-card timeline-panel" }, sectionHead(compact ? "Timeline preview" : "Weekly timeline", el("span", { class: "denominator" }, "Saved plan dates")), el("p", { class: "workspace-subtitle" }, `${displayDay(days[0])} – ${displayDay(days[6])} · Asia/Bangkok`), el("div", { class: "timeline-scroll" }, grid), tray);
-  if (!compact) panel.append(el("div", { id: "unscheduled-list", class: "unscheduled-list" }, ...unscheduled.map((t) => el("div", { class: "schedule-list-row" }, taskButton(t), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Schedule")))));
+  const tray = el("div", { class: "unscheduled-tray" }, icon("list"), el("div", {}, el("strong", {}, `Unscheduled leaf tasks · ${unscheduled.length}`), el("p", {}, "These tasks do not have dates yet. Schedule them when you are ready.")),
+    el("button", { class: "btn quiet", onclick: () => { if (compact) setProject("@timeline"); else { state.unscheduledExpanded = !state.unscheduledExpanded; renderWorkspaceView(); } } }, compact ? "View unscheduled ›" : state.unscheduledExpanded ? "Hide tasks" : "Show tasks"));
+  const panel = el("section", { class: "workspace-card timeline-panel" }, sectionHead(compact ? "Timeline preview" : "Weekly timeline", el("span", { class: "denominator" }, compact ? `${shown.length} of ${scheduled.length} scheduled tasks` : "Saved plan dates")),
+    el("p", { class: "workspace-subtitle" }, `${displayDay(days[0])} – ${displayDay(days[6])} · Asia/Bangkok`), page ? renderPager(page, "scheduled tasks") : null, el("div", { class: "timeline-scroll" }, grid),
+    compact ? el("button", { class: "btn quiet view-all-timeline", onclick: () => setProject("@timeline") }, "View full timeline") : null, tray);
+  if (!compact) {
+    const pendingPage = paginationWindow("unscheduled", unscheduled);
+    panel.append(el("div", { id: "unscheduled-list", class: "unscheduled-list", hidden: !state.unscheduledExpanded }, renderPager(pendingPage, "unscheduled tasks"),
+      ...pendingPage.items.map((t) => el("div", { class: "schedule-list-row" }, taskButton(t), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Schedule")))));
+  }
   return panel;
 }
+
 function completionPanel(tasks) {
   const ids = new Set(tasks.map((t) => t.id)), accepted = (state.harness.events || []).filter((e) => e.kind === "accepted" && ids.has(e.task_id));
   if (!accepted.length) return el("section", { class: "workspace-card completion-history" }, sectionHead("Accepted completion history"), el("p", { class: "workspace-subtitle" }, state.harness.history_window?.events?.truncated ? "No accepted completions in the returned event window. Earlier history is outside this view." : "No accepted completions recorded yet. History starts when evidence is accepted; earlier task updates are not backfilled."));
@@ -1726,15 +1790,43 @@ function completionPanel(tasks) {
 }
 function renderProjectList() {
   if (state.project === "@planning") {
-    const tasks = activeLeaves().filter((t) => t.status === "todo");
-    $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "Todo leaf tasks. Dependencies, source scope and acceptance are checked before execution."), el("section", { class: "workspace-card task-list" }, ...tasks.map((t) => el("div", { class: "project-list-row" }, taskButton(t), el("span", { class: "status-pill" }, t.status), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Plan dates"))), ...(!tasks.length ? [emptyState("No todo work", "Select a project to plan the next concrete task.")] : [])));
+    const tasks = activeLeaves().filter((t) => t.status === "todo"), page = paginationWindow("planning", tasks);
+    $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "Todo leaf tasks. Dependencies, source scope and acceptance are checked before execution."),
+      renderPager(page, "planning tasks"), el("section", { class: "workspace-card task-list" },
+        ...page.items.map((t) => el("div", { class: "project-list-row" }, taskButton(t), el("span", { class: "status-pill" }, t.status), el("button", { class: "btn quiet", onclick: () => showSchedule(t) }, "Plan dates"))),
+        ...(!tasks.length ? [emptyState("No todo work", "Select a project to plan the next concrete task.")] : [])));
     return;
   }
-  const projects = visibleProjects();
-  $("#dashboard").replaceChildren(el("div", { class: "project-list-toolbar" }, el("p", { class: "workspace-subtitle" }, state.scope === "active" ? "Active projects, grouped by their saved type. Change a category or edit the project brief." : "History is preserved. Restore a project when its work should return to active planning.")),
-    ...[...new Set(projects.map((p) => profileFor(p.slug).category))].sort().map((category) => el("section", { class: "workspace-card project-list" }, sectionHead(category), ...projects.filter((p) => profileFor(p.slug).category === category).map((p) => el("div", { class: "project-list-row" }, el("a", { href: "#" + p.slug, onclick: (e) => { e.preventDefault(); setProject(p.slug); } }, icon("folder", projectColor(p.slug)), el("strong", {}, p.name), el("small", {}, `${p.open} open tasks`)),
-      el("button", { class: "btn quiet", onclick: () => showProjectProfile(p) }, "Project brief"), el("button", { class: "filter-chip", onclick: () => showCategoryDialog(p) }, "Categorize"))))));
+  const projects = visibleProjects().slice().sort((a, b) => profileFor(a.slug).category.localeCompare(profileFor(b.slug).category)
+    || a.name.localeCompare(b.name) || a.slug.localeCompare(b.slug));
+  const page = paginationWindow("projects", projects), dashboard = $("#dashboard");
+  let toolbar = dashboard.querySelector(".project-list-toolbar");
+  if (!toolbar) {
+    const query = el("input", { class: "field", id: "project-query", type: "search", maxlength: 300,
+      placeholder: "Search projects by name, repository or type…", "aria-label": "Search projects" });
+    query.addEventListener("input", (event) => {
+      state.projectQuery = event.target.value;
+      $("#project-filter").value = state.projectQuery;
+      renderNav(); renderProjectList();
+    });
+    toolbar = el("div", { class: "project-list-toolbar" }, el("p", { class: "workspace-subtitle" }), query);
+    dashboard.replaceChildren(toolbar);
+  }
+  const query = toolbar.querySelector("#project-query");
+  if (document.activeElement !== query) query.value = state.projectQuery;
+  toolbar.querySelector("p").textContent = state.scope === "active"
+    ? "Active projects, grouped by type. Search first, then browse a page at a time."
+    : "History is preserved. Restore a project when its work should return to active planning.";
+  // Retain the toolbar node: filtering must not detach a focused search field or reset its caret.
+  for (const child of [...dashboard.children]) if (child !== toolbar) child.remove();
+  dashboard.append(renderPager(page, "projects"),
+    ...[...new Set(page.items.map((p) => profileFor(p.slug).category))].map((category) => el("section", { class: "workspace-card project-list" }, sectionHead(category),
+      ...page.items.filter((p) => profileFor(p.slug).category === category).map((p) => el("div", { class: "project-list-row" },
+        el("a", { href: "#" + p.slug, onclick: (event) => { event.preventDefault(); setProject(p.slug); } }, icon("folder", projectColor(p.slug)), el("strong", {}, p.name), el("small", {}, `${p.open} open tasks`)),
+        el("button", { class: "btn quiet", onclick: () => showProjectProfile(p) }, "Project brief"), el("button", { class: "filter-chip", onclick: () => showCategoryDialog(p) }, "Categorize"))))),
+    ...(!projects.length ? [emptyState("No matching projects", "Clear the project search or type filter to see more projects.")] : []));
 }
+
 function renderCalendar() {
   const today = dateISO(), anchor = new Date(today + "T12:00:00Z"); anchor.setUTCMonth(anchor.getUTCMonth() + state.monthOffset, 1);
   const first = anchor.toISOString().slice(0, 10), start = addDays(first, -((anchor.getUTCDay() + 6) % 7));
@@ -1755,8 +1847,12 @@ function renderTimeView() {
   const totals = el("div", { class: "planning-metrics time-metrics" }, ...[["Estimated leaf work", shortDuration(estimate), `${estimated.length} of ${leaves.length} leaf tasks estimated`], ["Recorded human work", shortDuration(recordedSecondsForTasks(ids)), "All-history closed human entries"], ["Direct coordination", shortDuration(recordedSecondsForTasks(parentIds)), "Parent-task effort, included once"], ["Running timer", runningTimer() ? "Active" : "None", "One human timer across sessions"]].map(([label, value, note]) => el("div", { class: "planning-metric" }, icon("clock"), el("div", {}, el("strong", {}, value), el("span", {}, label), el("small", {}, note)))));
   const byProject = scopeProjects("active").map((p) => { const mine = leaves.filter((t) => t.project === p.slug), myIds = new Set(mine.map((t) => t.id)); return { p, estimate: mine.reduce((n, t) => n + (planFor(t.id).estimate_seconds || 0), 0), hasEstimate: mine.some((t) => planFor(t.id).estimate_seconds != null), actual: recordedSecondsForTasks(myIds) }; }).filter((p) => p.hasEstimate || p.actual);
   const comparisons = el("section", { class: "workspace-card" }, sectionHead("Estimated and recorded leaf work"), ...byProject.map(({ p, estimate, hasEstimate, actual }) => { const max = Math.max(estimate, actual, 1); return el("div", { class: "time-comparison" }, el("strong", {}, p.name), el("div", { class: "effort-row" }, el("span", {}, "Estimate"), el("span", { class: "chart-track" }, el("span", { class: "chart-fill", style: `width:${estimate / max * 100}%;--chart-color:var(--purple)` })), el("span", {}, hasEstimate ? shortDuration(estimate) : "Not set")), el("div", { class: "effort-row" }, el("span", {}, "Recorded"), el("span", { class: "chart-track" }, el("span", { class: "chart-fill", style: `width:${actual / max * 100}%;--chart-color:var(--teal)` })), el("span", {}, shortDuration(actual)))); }), ...(!byProject.length ? [emptyState("No comparison yet", "Enter an estimate or record time to compare real values.")] : []));
-  const rows = el("section", { class: "workspace-card" }, sectionHead("Time entries", state.harness.history_window?.time_entries?.truncated ? el("span", { class: "denominator" }, "Latest 500 entries · totals use all history") : null), ...(entries.length ? entries.slice().reverse().map((entry) => timeEntryRow(entry)) : [emptyState("No entries yet", "Start a timer on a task, or add an explicit manual entry.")]));
-  $("#dashboard").replaceChildren(controls, totals, comparisons, rows);
+  const timer = runningTimer(), history = entries.filter((entry) => entry.id !== timer?.id).slice().reverse(), page = paginationWindow("time", history);
+  const pinned = timer ? el("section", { class: "workspace-card pinned-timer" }, sectionHead("Running human timer"),
+    ...(!ids.has(timer.task_id) ? [el("p", { class: "workspace-subtitle" }, "This timer is outside the current task filters.")] : []), timeEntryRow(timer)) : null;
+  const rows = el("section", { class: "workspace-card" }, sectionHead("Time entries", state.harness.history_window?.time_entries?.truncated ? el("span", { class: "denominator" }, "Latest 500 entries · totals use all history") : null),
+    renderPager(page, "time entries"), ...(history.length ? page.items.map((entry) => timeEntryRow(entry)) : [emptyState("No entries yet", "Start a timer on a task, or add an explicit manual entry.")]));
+  $("#dashboard").replaceChildren(controls, totals, ...(pinned ? [pinned] : []), comparisons, rows);
 }
 function timeEntryRow(entry) {
   const task = taskById(entry.task_id), running = !entry.ended_at;

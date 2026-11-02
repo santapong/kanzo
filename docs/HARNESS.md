@@ -92,6 +92,26 @@ tag replies at 64KiB. Narrow the filters when a budget is exceeded.
 GET `/api/projects/:slug/context` returns the same selected project brief as MCP.
 No new database migration, external index or background service is required.
 
+## Browsing long views
+
+Board columns and the Projects, Archive, Needs review, Planning, Timeline,
+unscheduled-task and time-history lists have Previous/Next controls with exact
+ranges and10/25/50 item choices. Filters apply before paging. A changed filter
+or scope resets the page; background updates retain it and shrinking lists clamp
+to the final valid page. Project search is also available above the main list.
+
+Display pagination retains the complete validated board snapshot for dependency,
+parent/child, totals and time checks. It reduces rendered rows, not initial board
+transfer size. Server search pagination remains a separate bounded API feature.
+Running human timers stay pinned outside paged history, including when filters
+exclude their task. Dashboard previews show six timeline tasks and three agenda
+entries per day with explicit links to the complete views.
+
+Manual dragging is disabled while task filters are active; status changes remain
+available in task details. On an unfiltered partial board page, a bottom drop
+uses the first unseen successor as its ordering anchor. Paging itself never
+changes a task, date, estimate, acceptance or recorded time.
+
 See [the coordinator workflow](COORDINATOR.md) for deduplication, proposed dates,
 subtasks, selected context and the boundary between planning and execution.
 
@@ -136,7 +156,7 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked -- --test-threads=1
 node --check src/app.js
-node --test tests/theme.test.cjs
+node --test tests/*.test.cjs
 python3 tests/http_acceptance.py --binary ./target/debug/kanzo
 ```
 

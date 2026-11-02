@@ -76,3 +76,24 @@ fresh/invalid preferences, live OS changes, manual overrides, cross-tab changes
 and unavailable storage. The protected theme asset loads before styles; this is
 not a frame-by-frame startup performance benchmark. No production QA fixtures
 or task schedule changes are part of these layout checks.
+
+## Pagination and balanced views — 2 November 2026
+
+The `0.3.0-harness.4` change passed44 native tests, formatting/Clippy,11 focused
+frontend tests and eight HTTP/MCP groups. The final release was rebuilt after
+the list-scroll correction and passed frontend/API checks again.
+
+An owned copied board used37 synthetic tasks, a real hidden child and28 manual
+time entries. Browser checks covered Next/Previous and keyboard focus,10/25/50
+sizes, final-page/empty/shrinking data, filter resets, search caret retention,
+background refresh, task-detail return, hidden-child rollup, pinned timer access,
+independent timeline/unscheduled pages and active-pager visibility. The dashboard
+preview limits and complete-view links were verified. Desktop1440×900 and
+phone390×844/320×568 stayed within the viewport.
+
+Pure tests and the native move API verify the first-unseen ordering anchor.
+A pointer-drag attempt did not reorder; its cause was not isolated, so complete
+pointer-driven drag qualification remains outside the passing browser scope.
+Display paging keeps the full validated snapshot; it is not server-side board
+pagination or a proven memory/performance improvement. Production fixtures and
+existing data remain separate from disposable browser checks.
