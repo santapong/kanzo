@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kanzo</title>
 <link rel="icon" href="/logo.png">
+<script src="/theme.js"></script>
 <style>
 :root {
   --bg: #ffffff; --sidebar: #f9f9f9; --col: #f7f7f7; --card: #ffffff; --card-hover: #f4f4f4; --panel: #ffffff;
@@ -517,7 +518,7 @@ body>aside { padding:18px 10px 12px; }
 .project-group .item .icon svg { display:none; }
 #theme-toggle,#settings { font-size:13px;color:var(--muted);margin-top:5px; }
 main>header { padding:20px 28px 19px;min-height:80px;gap:12px;flex-shrink:0; }
-header h1 { font-size:30px;line-height:1.18;letter-spacing:-.7px;font-weight:600; }
+header h1 { font-size:30px;line-height:1.18;letter-spacing:-.7px;font-weight:600;max-width:100%;overflow-wrap:anywhere; }
 header .info { gap:8px 14px; }
 header .sub { font-size:12px; }
 header .info:has(h1) { align-items:center; }
@@ -545,11 +546,12 @@ header .info:has(h1) { align-items:center; }
 .planning-metric:last-child strong { font-size:17px;letter-spacing:0; }
 .overview-grid { display:grid;grid-template-columns:minmax(0,2.25fr) minmax(280px,1fr);gap:18px;align-items:start; }
 .overview-main,.overview-side { display:flex;flex-direction:column;gap:18px;min-width:0; }
-.overview-charts { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px; }
+.overview-charts { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start; }
 .workspace-card { border:1px solid var(--border);border-radius:10px;background:var(--card);padding:18px;min-width:0; }
 .workspace-card+.workspace-card { margin-top:18px; }
 .overview-main>.workspace-card,.overview-side>.workspace-card { margin-top:0; }
-.workspace-card-head { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px; }
+.overview-charts>.workspace-card { margin-top:0; }
+.workspace-card-head { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;margin-bottom:15px; }
 .workspace-card-head h2 { font-size:17px;letter-spacing:-.35px;margin:0;font-weight:600;line-height:1.3; }
 .denominator { font-size:11px;line-height:1.35;color:var(--muted);white-space:nowrap; }
 .workspace-subtitle { color:var(--muted);font-size:12px;line-height:1.55;margin:0 0 16px; }
@@ -566,8 +568,11 @@ header .info:has(h1) { align-items:center; }
 .agenda-date small,.agenda-tasks small { font-size:11px;color:var(--muted); }
 .agenda-tasks>div { display:flex;flex-direction:column;gap:4px;margin-bottom:7px; }
 .agenda-empty { color:var(--faint); }
-.work-task-link { display:flex;align-items:center;gap:9px;padding:2px 0;background:transparent;border:0;color:var(--text);text-align:left;min-width:0;max-width:100%;font-size:12px;line-height:1.4; }
-.work-task-link>span:last-child { overflow-wrap:anywhere;min-width:0; }
+.agenda-tasks { min-width:0; }
+.work-task-link { display:grid;grid-template-columns:9px minmax(0,1fr);align-items:start;gap:4px 9px;padding:2px 0;background:transparent;border:0;color:var(--text);text-align:left;min-width:0;width:100%;max-width:100%;font-size:12px;line-height:1.4; }
+.work-task-title { overflow-wrap:anywhere;min-width:0; }
+.work-task-link>.project-dot { margin-top:4px; }
+.work-task-link>.status-pill { grid-column:2;justify-self:start;max-width:100%;white-space:normal; }
 .work-task-link:hover { color:var(--link); }
 .project-dot { display:inline-block;width:9px;height:9px;flex:none;border-radius:50%;background:var(--project-color,var(--teal)); }
 .timeline-scroll { overflow-x:auto;margin:20px -1px 0; }
@@ -636,12 +641,16 @@ header .info:has(h1) { align-items:center; }
 .panel { width:calc(100vw - 260px);max-width:none;left:260px;right:0;top:0;bottom:0;background:var(--bg);border-left:0;z-index:20;transform:translateX(105%);box-shadow:none; }
 .panel.shown { transform:translateX(0); }
 body.detail-open main { visibility:hidden; }
-.panel>.top { padding:18px 24px;border-bottom:1px solid var(--border);height:57px; }
-.panel .top .key { color:var(--link);font-size:12px; }
-.panel .top .ghost { width:auto;padding:6px; }
+.panel>.top { padding:14px 24px;border-bottom:1px solid var(--border);min-height:57px;height:auto;flex-shrink:0; }
+.panel .top .key { color:var(--link);font-size:12px;min-width:0;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto; }
+.panel .top #p-project { min-width:0;max-width:36%;flex:0 1 220px; }
+.panel .top .project-pick { display:block;min-width:0;width:100%;max-width:100%; }
+.panel .project-pick select { width:100%;max-width:100%;min-width:0;text-overflow:ellipsis; }
+.panel .top .spacer { min-width:0;flex:1 1 0; }
+.panel .top .ghost { width:auto;padding:6px;flex:none; }
 .panel .body.task-body { display:grid;grid-template-columns:minmax(0,1.8fr) minmax(285px,1fr);gap:0;padding:0;overflow-y:auto; }
 .task-main { padding:20px 24px 40px;min-width:0; }
-.panel .title-input { font-size:27px;line-height:1.25;font-weight:600;letter-spacing:-.5px;padding:0 0 15px; }
+.panel .title-input { font-size:27px;line-height:1.25;font-weight:600;letter-spacing:-.5px;padding:0 0 15px;margin:0;width:100%; }
 .task-meta { display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:15px; }
 .task-meta>label,.task-meta>span { display:flex;align-items:center;gap:7px;font-size:12px;border:1px solid var(--border);padding:7px 10px;border-radius:6px;min-width:0; }
 .task-meta>span { color:var(--muted); }
@@ -749,8 +758,8 @@ body.detail-open main { visibility:hidden; }
 }
 @media(max-width:900px) {
   body { grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr); }
-  body>aside { position:fixed;inset:0 auto 0 0;width:260px;height:100dvh;max-height:none;transform:translateX(-100%);transition:transform .18s ease;z-index:50;border-right:1px solid var(--border);border-bottom:0; }
-  body.sidebar-open>aside { transform:translateX(0); }
+  body>aside { position:fixed;inset:0 auto 0 0;width:260px;height:100dvh;max-height:none;transform:translateX(-100%);visibility:hidden;transition:transform .18s ease;z-index:50;border-right:1px solid var(--border);border-bottom:0; }
+  body.sidebar-open>aside { transform:translateX(0);visibility:visible; }
   .mobile-menu { display:flex;width:auto;padding:6px; }
   main>header { padding:17px 20px; }
   header .info { flex:1; }
@@ -827,6 +836,20 @@ body.detail-open main { visibility:hidden; }
 .search-toolbar .ghost { width:auto;font-size:22px; }
 .search-summary { color:var(--muted);font-size:11px;padding:0 18px;margin:8px 0; }
 .search-more { margin:10px 18px 14px;font-size:12px; }
+.theme-control { display:flex;align-items:center;gap:9px;margin:9px 4px 0;padding:7px 6px;color:var(--muted);font-size:12px; }
+.theme-control select { min-width:0;flex:1;border:1px solid var(--border);border-radius:6px;background:var(--field);padding:6px;color:var(--text);font-size:12px; }
+.project-notice { display:block;flex-shrink:0; }
+.project-notice>summary { display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none; }
+.project-notice>summary::-webkit-details-marker { display:none; }
+.notice-toggle { color:var(--link);font-size:11px;flex:none; }
+.notice-toggle::after { content:" +"; }
+.project-notice[open] .notice-toggle::after { content:" −"; }
+.notice-body { margin-top:10px;min-width:0;overflow-wrap:anywhere; }
+.notice-body p { margin:7px 0; }
+.calendar-task { display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.4;max-height:3.8em; }
+.calendar-task:hover { text-decoration:underline; }
+#filters-toggle { display:none; }
+button:focus-visible,a:focus-visible,summary:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
 @media(max-width:900px) { .task-filters { padding:0 20px 16px; } .filter-empty { margin:0 20px 16px; } }
 @media(max-width:680px) {
   .task-filters { padding:0 12px 13px;gap:8px;max-height:38vh;overflow-y:auto; }
@@ -836,6 +859,20 @@ body.detail-open main { visibility:hidden; }
   .task-filter-selects>label>span { min-width:30px; }
   .filter-empty { margin:0 12px 13px;flex-wrap:wrap; }
   .search-window { width:calc(100vw - 24px);max-width:100%; }
+}
+/* Short windows need a scrollable workspace as well as compact filter controls. */
+@media(max-width:680px),(max-width:900px) and (max-height:600px) {
+  main { overflow-y:auto;overflow-x:hidden; }
+  .dashboard { flex:none;overflow:visible; }
+  .columns { flex:1 0 280px;min-height:280px; }
+  .task-filters { max-height:none;overflow:visible; }
+  .task-filter-row { gap:7px; }
+  .task-filter-row>.btn { padding:7px 10px; }
+  #filters-toggle { display:inline-flex; }
+  .task-filter-selects { display:none;max-height:220px;overflow-y:auto; }
+  .task-filters.filters-open .task-filter-selects { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px; }
+  .task-filter-summary { max-height:90px;overflow-y:auto; }
+  .project-notice { padding:10px 12px; }
 }
 
 </style>
@@ -851,7 +888,7 @@ body.detail-open main { visibility:hidden; }
   <label class="project-filter"><span class="sr-only">Filter projects in this view</span><input class="field" id="project-filter" type="search" placeholder="Find a project…" autocomplete="off"></label>
   <nav class="nav" id="nav" aria-label="Portfolio navigation"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
-  <button class="ghost" id="theme-toggle" title="Change color theme"><span class="icon" data-icon="sun"></span><span id="theme-label">Theme</span></button>
+  <label class="theme-control" id="theme-control"><span class="icon" data-icon="sun"></span><span>Theme</span><select id="theme-select" aria-label="Color theme"><option value="system" selected>System (default)</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
 </aside>
 
@@ -868,9 +905,10 @@ body.detail-open main { visibility:hidden; }
     <div class="task-filter-row">
       <label class="task-query"><span class="icon" data-icon="search"></span><span class="sr-only">Filter tasks by text</span><input class="field" id="task-query" type="search" maxlength="300" placeholder="Filter tasks by title, description, tag or ID…" autocomplete="off"></label>
       <button class="btn quiet" id="task-search-open" title="Search every task, including completed work">Search all tasks</button>
-      <button class="btn quiet" id="filters-clear">Clear filters</button>
+      <button class="btn quiet" id="filters-clear" aria-label="Clear filters" title="Clear all filters">Clear</button>
+      <button class="btn quiet" id="filters-toggle" aria-controls="advanced-filters" aria-expanded="false">Filters</button>
     </div>
-    <div class="task-filter-row task-filter-selects">
+    <div class="task-filter-row task-filter-selects" id="advanced-filters">
       <label><span>State</span><select class="field" id="filter-status" aria-label="Filter by state"></select></label>
       <label><span>Type</span><select class="field" id="filter-type" aria-label="Filter by project type"></select></label>
       <label><span>Tag</span><select class="field" id="filter-tag" aria-label="Filter by tag"></select></label>
@@ -880,7 +918,7 @@ body.detail-open main { visibility:hidden; }
     <div class="task-filter-summary"><span id="filter-count" role="status" aria-live="polite"></span><div id="filter-chips" class="filter-chips"></div></div>
   </section>
   <div id="filter-empty" class="filter-empty" hidden><span>No tasks match these filters.</span><button class="text-button" id="filter-empty-clear">Clear all filters</button></div>
-  <div id="project-notice" class="project-notice" hidden></div>
+  <details id="project-notice" class="project-notice" hidden></details>
   <section class="dashboard" id="dashboard" aria-label="Active portfolio summary" hidden></section>
   <div class="columns" id="columns"></div>
 </main>

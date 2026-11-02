@@ -27,6 +27,7 @@ const state = {
   tagFilter: "",
   ownerFilter: "",
   scheduleFilter: "",
+  filtersExpanded: false,
   weekOffset: 0,
   monthOffset: 0,
   taskTab: "overview",
@@ -428,6 +429,10 @@ function renderTaskFilters() {
   $("#filter-empty").hidden = true;
   if (hidden) return;
   const source = taskScopeRows();
+  root.classList.toggle("filters-open", state.filtersExpanded);
+  const advancedCount = [state.statusFilter, state.typeFilter, state.tagFilter, state.ownerFilter, state.scheduleFilter].filter(Boolean).length;
+  $("#filters-toggle").textContent = advancedCount ? `Filters (${advancedCount})` : "Filters";
+  $("#filters-toggle").setAttribute("aria-expanded", String(state.filtersExpanded));
   const setOptions = (id, values, current, placeholder) => {
     const select = $(id);
     if (document.activeElement === select) return;
@@ -462,6 +467,7 @@ for (const [id, field] of [["#filter-status", "statusFilter"], ["#filter-type", 
   $(id).addEventListener("change", (e) => { state[field] = e.target.value; state.layout = ""; render(); });
 }
 $("#filters-clear").addEventListener("click", () => clearTaskFilters());
+$("#filters-toggle").addEventListener("click", () => { state.filtersExpanded = !state.filtersExpanded; renderTaskFilters(); });
 $("#filter-empty-clear").addEventListener("click", () => clearTaskFilters());
 $("#task-search-open").addEventListener("click", () => openSearch());
 function renderNav() {
@@ -621,7 +627,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog, dialog, #theme-toggle, #timer-indicator, #sidebar-toggle, #sidebar-scrim")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog, dialog, #theme-control, #timer-indicator, #sidebar-toggle, #sidebar-scrim")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -650,9 +656,9 @@ function renderHeader() {
     el("button", { class: "filter-chip", onclick: () => showCategoryDialog(p), title: "Change project type" }, m.category || "Categorize"),
     ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener" }, icon("github"), r)));
   const notice = $("#project-notice");
-  notice.replaceChildren(el("span", {}, m.state === "active" ? (m.band === "2to3months" ? "Activity is in the 2–3 month warning band." : "Active project") : m.state === "review" ? "Needs review — excluded from automatic selection." : "Archived — hidden from the active sidebar."),
-    el("span", { class: "notice-reason" }, m.reason || ""),
-    ...(m.state !== "active" ? [el("button", { class: "btn", onclick: () => savePortfolio(p.slug, { visibility: "active" }) }, "Restore to active")] : []));
+  notice.replaceChildren(el("summary", {}, el("span", {}, m.state === "active" ? (m.band === "2to3months" ? "Activity warning" : "Active project") : m.state === "review" ? "Needs review" : "Archived project"), el("span", { class: "notice-toggle" }, "Project notes")),
+    el("div", { class: "notice-body" }, el("p", { class: "notice-reason" }, m.reason || "No project notes recorded."),
+      ...(m.state !== "active" ? [el("p", {}, "Excluded from automatic selection."), el("button", { class: "btn", onclick: () => savePortfolio(p.slug, { visibility: "active" }) }, "Restore to active")] : [])));
 }
 
 function projectDate(value) {
@@ -1001,6 +1007,7 @@ async function refreshTask() {
   renderTaskHarness(task, state.taskContext);
   panelTask = task;
   $("#p-key").textContent = key(task);
+  $("#p-key").title = key(task);
   $("#p-key").title = `Copy ${key(task)}`;
   // Never overwrite what is being typed or picked.
   if (!$("#p-project").contains(document.activeElement)) renderProjectPick(task);
@@ -1643,7 +1650,7 @@ function recordedSecondsForTasks(taskIds, actor = "human") {
 }
 function runningTimer() { return timeEntries().find((e) => e.actor === "human" && !e.ended_at && e.kind === "timer") || null; }
 function elapsedSeconds(entry) { const t = new Date(entry.started_at).getTime(); return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 1000)) : 0; }
-function taskButton(t, extra = {}) { return el("button", { class: "work-task-link", onclick: () => { setProject(t.project); openTask(t.id); }, ...extra }, el("span", { class: "project-dot", style: `--project-color:${projectColor(t.project)}` }), el("span", {}, taskTitle(t))); }
+function taskButton(t, extra = {}) { return el("button", { class: "work-task-link", onclick: () => { setProject(t.project); openTask(t.id); }, ...extra }, el("span", { class: "project-dot", style: `--project-color:${projectColor(t.project)}` }), el("span", { class: "work-task-title" }, taskTitle(t))); }
 function scheduleTaskButton(task) { const button = taskButton(task); if (childrenOf(task.id).length) button.append(el("span", { class: "status-pill" }, "Summary")); return button; }
 function sectionHead(title, aside) { return el("div", { class: "workspace-card-head" }, el("h2", {}, title), aside || null); }
 function emptyState(title, text, action) { return el("div", { class: "workspace-empty" }, icon("info"), el("strong", {}, title), el("p", {}, text), action || null); }
@@ -1736,10 +1743,10 @@ function renderCalendar() {
   for (const day of days) {
     const mine = tasks.filter((t) => { const p = planFor(t.id); return scheduleOccurs(p, day); });
     grid.append(el("div", { class: "calendar-day" + (day.slice(0, 7) !== first.slice(0, 7) ? " other-month" : "") + (day === today ? " today" : ""), role: "gridcell", "aria-label": displayDay(day, { year: "numeric" }) }, el("span", { class: "calendar-number" }, String(Number(day.slice(8)))),
-      ...mine.map((t) => el("button", { class: "calendar-task", style: `--project-color:${projectColor(t.project)}`, onclick: () => showSchedule(t) }, planFor(t.id).due_date === day ? "◆ " : "", childrenOf(t.id).length ? "Summary · " : "", taskTitle(t)))));
+      ...mine.map((t) => el("button", { class: "calendar-task", style: `--project-color:${projectColor(t.project)}`, title: `${t.project} · ${taskTitle(t)}`, "aria-label": `${key(t)} · ${taskTitle(t)}`, onclick: () => { setProject(t.project); openTask(t.id); } }, planFor(t.id).due_date === day ? "◆ " : "", childrenOf(t.id).length ? "Summary · " : "", taskTitle(t)))));
   }
   const unscheduled = activeLeaves().filter((t) => { const p = planFor(t.id); return !p.planned_start && !p.planned_end && !p.due_date; });
-  $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "All-day plans and due dates · Asia/Bangkok. Summary milestones and leaf tasks share the same schedule used by Timeline."), el("section", { class: "workspace-card calendar-panel" }, grid), el("p", { class: "workspace-subtitle" }, `${unscheduled.length} leaf tasks are unscheduled and remain visible in Timeline.`));
+  $("#dashboard").replaceChildren(el("p", { class: "workspace-subtitle" }, "All-day plans and due dates · Asia/Bangkok. Select a task for its full details. Summary milestones and leaf tasks use the same dates as Timeline."), el("section", { class: "workspace-card calendar-panel" }, grid), el("p", { class: "workspace-subtitle" }, `${unscheduled.length} leaf tasks are unscheduled and remain visible in Timeline.`));
 }
 function renderTimeView() {
   const tasks = allActiveTasks(), ids = new Set(tasks.map((t) => t.id)), entries = timeEntries().filter((e) => ids.has(e.task_id)), human = entries.filter((e) => e.actor === "human"), leaves = activeLeaves(), parentIds = new Set(tasks.filter((t) => childrenOf(t.id).length).map((t) => t.id));
@@ -1965,22 +1972,14 @@ setInterval(() => {
 }, 1000);
 
 // ---------- theme and responsive navigation ----------
-function themePreference() { return localStorageGet("kanzo.theme") || "system"; }
-function applyTheme(choice = themePreference()) {
-  const dark = choice === "dark" || (choice === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-  $("#theme-label").textContent = `Theme: ${choice}`;
-  $("#theme-toggle").setAttribute("aria-label", `Color theme ${choice}; click to change`);
-}
-$("#theme-toggle").addEventListener("click", () => { const choices = ["system", "light", "dark"], next = choices[(choices.indexOf(themePreference()) + 1) % choices.length]; try { localStorage.setItem("kanzo.theme", next); } catch {} applyTheme(next); });
-const colorQuery = matchMedia("(prefers-color-scheme: dark)");
-if (colorQuery.addEventListener) colorQuery.addEventListener("change", () => { if (themePreference() === "system") applyTheme(); });
-else if (colorQuery.addListener) colorQuery.addListener(() => { if (themePreference() === "system") applyTheme(); });
+$("#theme-select").value = window.KanzoTheme.getPreference();
+$("#theme-select").addEventListener("change", (event) => window.KanzoTheme.setPreference(event.target.value));
+window.addEventListener("kanzo:theme-change", (event) => { $("#theme-select").value = event.detail.preference; });
 function closeSidebar() { document.body.classList.remove("sidebar-open"); $("#sidebar-scrim").hidden = true; $("#sidebar-toggle").setAttribute("aria-expanded", "false"); }
 $("#sidebar-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("sidebar-open"); document.body.classList.toggle("sidebar-open", open); $("#sidebar-scrim").hidden = !open; $("#sidebar-toggle").setAttribute("aria-expanded", String(open)); });
 $("#sidebar-scrim").addEventListener("click", closeSidebar);
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSidebar(); });
-applyTheme();
+window.KanzoTheme.apply();
 
 checkUpdate();
 setInterval(checkUpdate, 24 * 60 * 60 * 1000);

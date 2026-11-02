@@ -24,6 +24,7 @@ const INDEX: &str = include_str!("index.html");
 /// The largest image the board takes from a paste.
 const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
+const THEME_JS: &str = include_str!("theme.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run
@@ -121,6 +122,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
     }
     app.route("/", get(|| async { Html(INDEX) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
+        .route("/theme.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], THEME_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/images/{file}", get(image_file))
         .route("/api/ping", get(|| async { "kanzo" }))

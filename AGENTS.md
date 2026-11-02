@@ -8,6 +8,8 @@ The accepted frontend is the light portfolio workspace with detailed task
 inspection, plus an equivalent dark theme. Dashboard, Board, Timeline,
 Calendar and Time use the same native SQLite records through HTTP and MCP.
 Keep the UI responsive and dependency-free; no invented task dates or hours.
+Default to the System theme, with explicit Light/Dark overrides. Check short
+phone/landscape heights and long identifiers as well as ordinary viewport widths.
 
 Task IDs, comments and history survive additive migrations. Enforce dependency,
 parent/child, eligibility and timer invariants in Store transactions so clients

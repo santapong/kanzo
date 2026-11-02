@@ -136,6 +136,7 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked -- --test-threads=1
 node --check src/app.js
+node --test tests/theme.test.cjs
 python3 tests/http_acceptance.py --binary ./target/debug/kanzo
 ```
 
@@ -143,6 +144,14 @@ The HTTP suite uses a temporary synthetic board on loopback. Browser acceptance
 should exercise theme persistence, mobile/tablet/desktop, real subtasks,
 schedule/calendar consistency, timers across tabs, context and user review.
 Keep test screenshots containing private project names outside public Git.
+
+System is the default theme. The sidebar selector offers System, Light and Dark;
+manual choices persist where browser storage is available. The small protected
+`/theme.js` bootstrap resolves the choice before styles load, follows OS changes
+in System mode and preserves an in-memory choice if storage is unavailable.
+On phones and short windows, advanced filters collapse behind Filters without
+clearing their values. Project notes expand separately and the workspace remains
+scrollable so task cards and actions stay reachable.
 
 The app retains upstream Host/Origin/CSP protections. This is a single-owner
 local app without account authentication. Actor/reviewer strings are attribution,

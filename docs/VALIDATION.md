@@ -55,3 +55,24 @@ No schema or dependency-version migration was added. Private planning records
 and proposed dates are owner data, excluded from this public repository. The
 checks retain the single-owner/loopback boundary and human acceptance rules;
 they are not an authenticated multi-user or complete security qualification.
+
+## System theme and layout correction — 2 November 2026
+
+The `0.3.0-harness.3` source passed44 native tests, Clippy/formatting, six focused
+theme tests and eight HTTP/MCP groups. The final release was rebuilt after the
+last layout changes and passed the theme and HTTP/MCP checks again.
+
+Browser verification used an isolated board copy with a synthetic32-character
+project slug and long summary title. Checks covered320×568,390×844,768×1024,
+844×390 landscape and1440×900. On the short phone screen, collapsed advanced
+filters/notes and outer scrolling preserve280px of board height instead of the
+observed12px. Long header identifiers leave Close/Delete within the viewport;
+summary titles wrap inside their rows and chart cards align at their top edge.
+Calendar titles use a compact display and open full task details.
+
+Explicit System/Light selection, reload persistence and an unsaved plan field
+surviving theme changes passed in the browser. Theme VM tests separately cover
+fresh/invalid preferences, live OS changes, manual overrides, cross-tab changes
+and unavailable storage. The protected theme asset loads before styles; this is
+not a frame-by-frame startup performance benchmark. No production QA fixtures
+or task schedule changes are part of these layout checks.
