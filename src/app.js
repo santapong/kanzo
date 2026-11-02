@@ -38,6 +38,7 @@ const state = {
   changes: null,         // change counter seen last
   task: null,            // open task id
   dragging: null,        // id of the card being dragged
+  dropPending: false,
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
   allDone: false,        // show every card in the done column
@@ -352,19 +353,20 @@ async function loadBoard() {
       api("GET", "/board?project=" + encodeURIComponent(isPortfolioRoute(state.project) ? "all" : state.project) + done),
       api("GET", "/harness"),
     ]);
-    if (request !== boardRequest) return;
+    if (request !== boardRequest) return false;
     state.harness = harness;
     for (const p of board.projects) {
       const profile = profileFor(p.slug);
       p.portfolio = { category: profile.category || "Needs classification", state: profile.visibility || "review", eligible: profile.visibility === "active", reason: profile.context_notes || "", category_source: "project profile" };
     }
     board.portfolio = { projects: board.projects.map((p) => ({ slug: p.slug, ...p.portfolio })), categories: [...new Set(board.projects.map((p) => p.portfolio.category))] };
-    if (request !== boardRequest) return;
+    if (request !== boardRequest) return false;
     state.board = board;
     if (!isPortfolioRoute(state.project)) state.scope = scopeForProject(state.project);
     state.changes = board.changes;
     $("#offline").hidden = true;
     render();
+    return true;
   } catch (e) {
     if (request !== boardRequest) return;
     if (state.project !== "all" && /no project/.test(e.message)) {
@@ -372,6 +374,7 @@ async function loadBoard() {
     } else {
       toast(e.message);
     }
+    return false;
   }
 }
 
@@ -404,6 +407,8 @@ function setProject(slug) {
 }
 
 function render() {
+  // Keep source/drop nodes stable through the gesture and its single write.
+  if (state.dragging || state.dropPending) return;
   renderNav();
   renderDateControls();
   renderTimerIndicator();
@@ -804,7 +809,7 @@ function renderColumns() {
   }
 
   // During a drag the DOM is being moved by hand; refresh once it ends.
-  if (state.dragging) return;
+  if (state.dragging || state.dropPending) return;
   const all = isPortfolioRoute(state.project);
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
@@ -878,7 +883,7 @@ function card(t, showProject) {
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
     t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("button", { type: "button", class: "tag", title: `Filter by tag: ${tag}`, onclick: (e) => { e.stopPropagation(); chooseTag(tag); } }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
-    if (hasTaskFilters()) { e.preventDefault(); return; }
+    if (hasTaskFilters() || state.dropPending) { e.preventDefault(); return; }
     state.dragging = t.id;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", String(t.id));
@@ -889,8 +894,7 @@ function card(t, showProject) {
     document.querySelectorAll(".drop-line").forEach((d) => d.remove());
     state.dragging = null;
     // A drop reloads once the move is saved; a cancelled drag puts the card back.
-    if (!state.dropped) loadBoard();
-    state.dropped = false;
+    if (!state.dropPending) { loadBoard(); state.dropped = false; }
   });
   return node;
 }
@@ -898,38 +902,63 @@ function card(t, showProject) {
 // The whole column takes drops; cards land in its list.
 function wireDrop(col, list, status) {
   const line = el("div", { class: "drop-line" });
-  const cardAfter = (y) => {
-    const cards = [...list.querySelectorAll(".card:not(.dragging)")];
-    return cards.find((c) => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; }) || null;
+  const beforeAt = (y) => {
+    const bounds = list.getBoundingClientRect(), current = col._pagination;
+    return window.KanzoPagination.dropBefore({ items: current?.items || [], page: current?.window || { start: 0, end: 0 },
+      movingId: state.dragging, collapsed: col.classList.contains("collapsed"), y, top: bounds.top, bottom: bounds.bottom,
+      cards: [...list.querySelectorAll(".card")].map((card) => { const r = card.getBoundingClientRect(); return { id: Number(card.dataset.id), top: r.top, bottom: r.bottom }; }) });
   };
-  col.addEventListener("dragover", (e) => {
-    if (!state.dragging || hasTaskFilters()) return;
+  const showDropTarget = (e) => {
+    if (!state.dragging || state.dropPending || hasTaskFilters()) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const after = cardAfter(e.clientY);
-    if (after) list.insertBefore(line, after); else list.append(line);
-  });
+    const before = beforeAt(e.clientY), after = list.querySelector(`.card[data-id="${before}"]`);
+    const bounds = list.getBoundingClientRect(), origin = col.getBoundingClientRect();
+    const markerY = e.clientY <= bounds.top ? bounds.top : e.clientY >= bounds.bottom ? bounds.bottom : after?.getBoundingClientRect().top ?? bounds.bottom;
+    line.style.top = `${Math.max(0, Math.min(bounds.bottom - 2, Math.max(bounds.top, markerY)) - origin.top)}px`;
+    col.append(line);
+  };
+  col.addEventListener("dragenter", showDropTarget);
+  col.addEventListener("dragover", showDropTarget);
   col.addEventListener("dragleave", (e) => {
     if (!col.contains(e.relatedTarget)) line.remove();
   });
   col.addEventListener("drop", async (e) => {
     e.preventDefault();
     const id = state.dragging;
-    if (!id) return;
+    if (!id || state.dropPending) return;
     if (hasTaskFilters()) { line.remove(); toast("Clear task filters before reordering cards."); return; }
-    const after = cardAfter(e.clientY);
-    const dragged = document.querySelector(`.card[data-id="${id}"]`);
-    if (dragged) list.insertBefore(dragged, line.parentNode === list ? line : null);
+    const before = beforeAt(e.clientY);
     line.remove();
     state.dropped = true;
+    state.dropPending = true;
+    $("#columns").setAttribute("aria-busy", "true");
     if (fresh === id) fresh = null;
-    const before = after ? Number(after.dataset.id) : col.classList.contains("collapsed") ? null
-      : window.KanzoPagination.nextAfterPage(col._pagination?.items || [], col._pagination?.window || { end: 0 }, id);
+    let moved = false;
     try {
       await api("POST", `/tasks/${id}/move`, { status, before });
+      moved = true;
       if (state.task === id) refreshTask();
     } catch (err) { toast(err.message); }
-    loadBoard();
+    finally {
+      state.dragging = null;
+      state.dropped = false;
+      const refreshed = await loadBoard();
+      if (moved && refreshed) {
+        const items = visibleTasks().filter((task) => task.status === status), index = items.findIndex((task) => task.id === id);
+        if (index >= 0) {
+          const page = paginationWindow(`column:${status}`, items);
+          paginationPages.set(page.key, Math.floor(index / page.pageSize) + 1);
+        }
+      }
+      state.dropPending = false;
+      $("#columns").removeAttribute("aria-busy");
+      render();
+      if (moved && refreshed) {
+        document.querySelector(`.card[data-id="${id}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        toast(`Moved task #${id} to ${status}`);
+      } else if (moved) toast("Move saved; the board could not refresh. Reload to show the saved position.");
+    }
   });
 }
 

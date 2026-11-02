@@ -931,12 +931,17 @@ impl Store {
             let before = before.filter(|b| *b != id);
             // The task to go above, with its position, if it's in that column.
             let anchor: Option<(i64, f64)> = match before {
-                Some(b) => c
-                    .query_row("SELECT position FROM tasks WHERE id = ?1 AND status = ?2", params![b, status], |r| {
-                        r.get(0)
-                    })
-                    .optional()?
-                    .map(|p| (b, p)),
+                Some(b) => {
+                    let position = c
+                        .query_row(
+                            "SELECT position FROM tasks WHERE id = ?1 AND status = ?2",
+                            params![b, status],
+                            |r| r.get::<_, f64>(0),
+                        )
+                        .optional()?
+                        .ok_or_else(|| Error::Invalid("drop target changed; refresh the board and try again".into()))?;
+                    Some((b, position))
+                }
                 None => None,
             };
             let position = match anchor {
@@ -1683,6 +1688,45 @@ mod tests {
         }
         assert_eq!(titles(&s.list_tasks(None, Some("doing")).unwrap()).last(), Some(&"a"));
         assert!(s.move_task(a.id, "nope", None).is_err());
+    }
+
+    #[test]
+    fn stale_move_anchors_reject_atomically_without_reopening_or_reordering() {
+        let (_dir, s) = store();
+        let project = s.create_project("moves", "", None).unwrap();
+        let moving = s.create_task(project.id, "Accepted task", "").unwrap();
+        let elsewhere = s.create_task(project.id, "Anchor moved elsewhere", "").unwrap();
+        let deleted = s.create_task(project.id, "Deleted anchor", "").unwrap();
+        let tail = s.create_task(project.id, "Todo tail", "").unwrap();
+        s.save_task_plan(
+            moving.id,
+            crate::planning::TaskPlan { acceptance: "Reviewed evidence".into(), ..Default::default() },
+        )
+        .unwrap();
+        s.accept_task(moving.id, "Fixture owner", "Evidence checked").unwrap();
+        s.move_task(elsewhere.id, "doing", None).unwrap();
+        s.delete_task(deleted.id).unwrap();
+        let snapshot = || {
+            serde_json::json!({
+                "changes": s.changes().unwrap(),
+                "tasks": s.list_tasks(None, None).unwrap(),
+                "harness": s.harness_snapshot().unwrap(),
+                "moving_context": s.task_context(moving.id).unwrap(),
+            })
+        };
+        let before = snapshot();
+        assert_eq!(before["moving_context"]["accepted"], true);
+        for anchor in [deleted.id, elsewhere.id, i64::MAX] {
+            let error = s.move_task(moving.id, "todo", Some(anchor)).unwrap_err();
+            assert!(error.to_string().contains("refresh the board"));
+            assert_eq!(snapshot(), before, "failed move must roll back acceptance, events and ordering");
+        }
+        // None and a self-anchor retain their established explicit append behaviour.
+        s.move_task(moving.id, "todo", None).unwrap();
+        assert_eq!(titles(&s.list_tasks(None, Some("todo")).unwrap()), ["Todo tail", "Accepted task"]);
+        assert_eq!(s.task_context(moving.id).unwrap()["accepted"], false);
+        s.move_task(tail.id, "todo", Some(tail.id)).unwrap();
+        assert_eq!(titles(&s.list_tasks(None, Some("todo")).unwrap()), ["Accepted task", "Todo tail"]);
     }
 
     #[test]

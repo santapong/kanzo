@@ -211,7 +211,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   background: var(--hover); border-radius: 99px; padding: 1px 9px 1px 8px;
 }
 .tag .dot { width: 6px; height: 6px; }
-.drop-line { height: 2px; background: var(--text); border-radius: 2px; margin: -4px 4px; }
+.drop-line { position:absolute;left:8px;right:8px;height:2px;background:var(--accent);border-radius:2px;pointer-events:none;z-index:2; }
 .empty {
   margin: auto; text-align: center; color: var(--muted); max-width: 380px; padding: 40px 20px;
 }
@@ -725,7 +725,7 @@ body.detail-open main { visibility:hidden; }
 .work-dialog .row { display:flex;justify-content:flex-end;gap:8px;margin-top:22px; }
 .work-dialog .error { color:var(--danger);white-space:pre-wrap;font-size:12px; }
 .columns { padding:0 28px 24px;gap:14px; }
-.column { border-radius:9px;background:var(--col); }
+.column { position:relative;border-radius:9px;background:var(--col); }
 .card { border:1px solid var(--card-border);border-radius:7px;box-shadow:0 1px 2px rgba(0,0,0,.02); }
 .card .title { font-size:13px; }
 .card .desc { font-size:12px; }

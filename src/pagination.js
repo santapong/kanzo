@@ -20,7 +20,17 @@
     return items.slice(window.end).find((item) => item.id !== movingId)?.id ?? null;
   }
 
-  const api = Object.freeze({ pageWindow, nextAfterPage });
+  // Header/footer targets refer to the complete rendered page even when its
+  // list is scrolled. Interior coordinates keep clipped next rows as anchors.
+  function dropBefore({ items, page, movingId, collapsed, y, top, bottom, cards }) {
+    if (collapsed) return null;
+    const next = nextAfterPage(items, page, movingId);
+    if (y <= top) return items.slice(page.start, page.end).find((item) => item.id !== movingId)?.id ?? next;
+    if (y >= bottom) return next;
+    return cards.find((card) => card.id !== movingId && y < (card.top + card.bottom) / 2)?.id ?? next;
+  }
+
+  const api = Object.freeze({ pageWindow, nextAfterPage, dropBefore });
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.KanzoPagination = api;
 })();

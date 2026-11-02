@@ -150,6 +150,38 @@ def main():
                     request("GET", "/api/tasks/query?" + bad, expected=400)
                 check("shared discovery filters, exact tags, full-history pagination and validation")
 
+                request("POST", "/api/projects", {"slug": "moves", "name": "Move boundaries"})
+                moving = request("POST", "/api/tasks", {"project": "moves", "title": "Accepted moving task"})
+                elsewhere = request("POST", "/api/tasks", {"project": "moves", "title": "Other-column anchor"})
+                deleted = request("POST", "/api/tasks", {"project": "moves", "title": "Deleted anchor"})
+                tail = request("POST", "/api/tasks", {"project": "moves", "title": "Todo tail"})
+                moving_plan = request("GET", f"/api/tasks/{moving['id']}/plan")
+                moving_plan["acceptance"] = "Reviewed evidence"
+                request("PUT", f"/api/tasks/{moving['id']}/plan", moving_plan)
+                request("PATCH", f"/api/tasks/{moving['id']}", {"status": "review"})
+                request("POST", f"/api/tasks/{moving['id']}/accept",
+                        {"reviewer": "Fixture owner", "evidence": "Boundary fixture reviewed"})
+                request("PATCH", f"/api/tasks/{elsewhere['id']}", {"status": "doing"})
+                request("DELETE", f"/api/tasks/{deleted['id']}")
+                unchanged_board = request("GET", "/api/board?project=moves&done=all")
+                unchanged_harness = request("GET", "/api/harness")
+                unchanged_context = request("GET", f"/api/tasks/{moving['id']}/context")
+                assert unchanged_context["accepted"]
+                for anchor in [deleted["id"], elsewhere["id"], 999999]:
+                    rejected = request("POST", f"/api/tasks/{moving['id']}/move",
+                                       {"status": "todo", "before": anchor}, expected=400)
+                    assert "refresh the board" in rejected["error"]
+                    assert request("GET", "/api/board?project=moves&done=all") == unchanged_board
+                    assert request("GET", "/api/harness") == unchanged_harness
+                    assert request("GET", f"/api/tasks/{moving['id']}/context") == unchanged_context
+                request("POST", f"/api/tasks/{moving['id']}/move", {"status": "todo", "before": None})
+                moved_board = request("GET", "/api/board?project=moves&done=all")
+                assert [t["id"] for t in moved_board["tasks"] if t["status"] == "todo"] == [tail["id"], moving["id"]]
+                request("POST", f"/api/tasks/{tail['id']}/move", {"status": "todo", "before": tail["id"]})
+                moved_board = request("GET", "/api/board?project=moves&done=all")
+                assert [t["id"] for t in moved_board["tasks"] if t["status"] == "todo"] == [moving["id"], tail["id"]]
+                check("stale/deleted move anchors reject atomically; explicit append/self-anchor preserved")
+
                 mcp_headers = {"Accept": "application/json, text/event-stream"}
                 def mcp(method, params, number):
                     data, h = request("POST", "/mcp", {"jsonrpc": "2.0", "id": number,

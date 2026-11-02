@@ -12,6 +12,10 @@ Default to the System theme, with explicit Light/Dark overrides. Check short
 phone/landscape heights and long identifiers as well as ordinary viewport widths.
 Page rendered matches after filtering; keep full records for relationships and
 totals. Keep the active pager in view when paging a nested or lower-page list.
+For drag changes, use real gestures plus fresh saved-order checks. Keep drop
+markers out of layout/hit-testing, clamp header/footer targets to page boundaries,
+reject stale anchors and keep one move pending through refresh. Test denied and
+cancelled drops separately from successful moves.
 
 Task IDs, comments and history survive additive migrations. Enforce dependency,
 parent/child, eligibility and timer invariants in Store transactions so clients

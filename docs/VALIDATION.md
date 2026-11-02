@@ -97,3 +97,32 @@ pointer-driven drag qualification remains outside the passing browser scope.
 Display paging keeps the full validated snapshot; it is not server-side board
 pagination or a proven memory/performance improvement. Production fixtures and
 existing data remain separate from disposable browser checks.
+
+## Native drag/drop qualification — 2 November 2026
+
+This follow-up qualifies the previously unverified desktop pointer path for the
+tested browser. Native trusted input traces showed that fast final target entry
+could occur without a further dragover before release. Handling dragenter as
+well as dragover resolved that reproduced loss. Overlay markers, scrolled
+header/footer boundaries and stale-anchor rejection were fixed separately.
+
+The change passed 45 native tests, 15 frontend tests, formatting/Clippy and nine
+HTTP/MCP groups. Real browser gestures on isolated board copies were followed
+by fresh read-only SQLite/API checks of status, complete ordering, identities,
+unchanged fields and trigger-aware change-counter deltas. Fifteen persisted
+case receipts cover full/partial destination pages, scrolled header/footer,
+same-column reordering, empty/collapsed destinations, source-page clamping,
+cancellation, filtered guards, dependency/summary/acceptance denial, reload and
+final-build success/denial. Successful full-page insertion reveals the saved
+card on its new page; collapsed targets retain count/toast feedback.
+
+A loopback-only disposable fault proxy exercised a successful save followed by
+failed refreshes. Feedback reported the saved move accurately, one successful
+move was observed and clearing the fault/reloading showed the persisted order.
+The final release passed frontend/API checks again after that feedback fix.
+Temporary diagnostics and fault controls are excluded from the public/runtime app.
+
+Scope: desktop native gestures in the current Chromium browser at 855×932;
+other engines and physical touch devices are not qualified by these receipts.
+The earlier pointer gap remains historical evidence for 6172baa and is superseded
+by this executed matrix for the corrected build. No real task was moved for QA.

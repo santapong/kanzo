@@ -112,6 +112,20 @@ available in task details. On an unfiltered partial board page, a bottom drop
 uses the first unseen successor as its ordering anchor. Paging itself never
 changes a task, date, estimate, acceptance or recorded time.
 
+Drag targets accept entry as well as movement over a target, following the
+[HTML drag-and-drop event model](https://html.spec.whatwg.org/dev/dnd.html).
+The insertion marker is an overlay, so it neither shifts cards nor intercepts
+the pointer. Headers and footers target the current page boundaries even when
+the list is scrolled. Successful moves reveal their destination page and card;
+collapsed columns retain their collapsed state with count/toast feedback.
+
+Only one move is in flight through save and refresh. Missing or wrong-column
+ordering anchors reject with refresh guidance instead of silently appending.
+Dependency, summary and human-acceptance rules remain enforced by the Store.
+If saving succeeds but refreshing fails, feedback says that the move was saved
+and requests a reload; it does not retry the move automatically. These fixes
+are in the updated executable; previously started helpers retain their old code.
+
 See [the coordinator workflow](COORDINATOR.md) for deduplication, proposed dates,
 subtasks, selected context and the boundary between planning and execution.
 
