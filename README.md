@@ -10,9 +10,18 @@ not measurements of this modified workspace.
 The fork adds responsive light/dark portfolio views, status/category charts,
 a shared Timeline/Calendar schedule, human timers and manual time, real subtasks,
 dependencies, structured task/project briefs and selected Codex context references.
+Versioned agent-feedback reports and human-reviewed lessons use the same private
+SQLite store. The portable [kanzo-harness skill](skills/kanzo-harness/SKILL.md)
+teaches scoped planning, selected context, evidence and the feedback loop.
 Read [the fork guide](docs/HARNESS.md) for setup, API/MCP, data migration,
 validation and rollback. Keep private board data and memory outside this public
 source repository. The upstream AGPL license and authorship remain intact.
+
+Source versions are annotated Git tags under `v0.3.0-harness.*` on the fork's
+`develop` line; they do not publish the runtime database or imply upstream release
+acceptance. See [feedback and learning](docs/FEEDBACK.md) and
+[storage choice](docs/STORAGE.md). Feedback is reviewed context, not an automatic
+instruction editor or background model trainer.
 
 ---
 

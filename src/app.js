@@ -394,7 +394,7 @@ function readHash() {
 function setProject(slug) {
   state.project = slug;
   closeSidebar();
-  if (["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time"].includes(slug)) state.scope = "active";
+  if (["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time", "@feedback"].includes(slug)) state.scope = "active";
   else if (slug === "@review" || slug === "@archive") state.scope = slug.slice(1);
   else {
     clearTaskFilters(false);
@@ -425,7 +425,7 @@ function render() {
   }
 }
 
-function isPortfolioRoute(slug) { return ["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time", "@review", "@archive"].includes(slug); }
+function isPortfolioRoute(slug) { return ["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time", "@review", "@archive", "@feedback"].includes(slug); }
 function projectMeta(p) {
   return p?.portfolio || state.board?.portfolio?.projects?.find((m) => m.slug === p?.slug) ||
     { category: "Needs classification", state: "review", eligible: false, reason: "Activity metadata is unavailable." };
@@ -471,7 +471,7 @@ function clearTaskFilters(redraw = true) {
 }
 function chooseTag(tag) { state.tagFilter = tag; closeTask(); render(); }
 function renderTaskFilters() {
-  const root = $("#task-filters"), hidden = ["@projects", "@review", "@archive"].includes(state.project);
+  const root = $("#task-filters"), hidden = ["@projects", "@review", "@archive", "@feedback"].includes(state.project);
   root.hidden = hidden;
   $("#filter-empty").hidden = true;
   if (hidden) return;
@@ -556,6 +556,7 @@ function renderNav() {
     link("@timeline", "Timeline", "", icon("timeline")),
     link("@calendar", "Calendar", "", icon("calendar")),
     link("@time", "Time log", "", icon("clock")),
+    link("@feedback", "Feedback", "", icon("info")),
     el("div", { class: "nav-secondary" }, link("@review", "Needs review", review.length, icon("info")), link("@archive", "Archive", archive.length, icon("archive"))),
     el("div", { class: "label" }, state.scope === "active" ? "Active projects by type" : state.scope === "review" ? "Projects needing review" : "Archived projects by type"),
     ...grouped,
@@ -690,13 +691,13 @@ function currentProject() {
 function renderHeader() {
   const p = currentProject();
   const header = $("#header");
-  $("#new-task").hidden = state.scope !== "active" || !scopeProjects().length;
+  $("#new-task").hidden = state.project === "@feedback" || state.scope !== "active" || !scopeProjects().length;
   $("#project-notice").hidden = !p;
   if (!p) {
-    const titles = { "@dashboard": "Portfolio planning", "@projects": "Projects", "@planning": "Planning queue", "@timeline": "Timeline", "@calendar": "Calendar", "@time": "Time log", all: "Task board", "@review": "Needs review", "@archive": "Archive" };
+    const titles = { "@dashboard": "Portfolio planning", "@projects": "Projects", "@planning": "Planning queue", "@timeline": "Timeline", "@calendar": "Calendar", "@time": "Time log", "@feedback": "Feedback & lessons", all: "Task board", "@review": "Needs review", "@archive": "Archive" };
     const list = scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter);
     header.replaceChildren(el("h1", {}, titles[state.project] || "Task board"),
-      el("span", { class: "sub" }, state.project === "@dashboard" ? "Your projects. A clear next step." : `${list.length} projects`));
+      el("span", { class: "sub" }, state.project === "@dashboard" ? "Your projects. A clear next step." : state.project === "@feedback" ? "Reports, evidence and reviewed lessons" : `${list.length} projects`));
     if (["@projects", "@review", "@archive"].includes(state.project) && state.typeFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.typeFilter = ""; render(); } }, state.typeFilter + " ×"));
     $("#project-notice").hidden = true;
     return;
@@ -1443,6 +1444,7 @@ $("#search-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "
 // ---------- keyboard, polling, start ----------
 
 document.addEventListener("keydown", (e) => {
+  if ($("#feedback-dialog").open) return;
   if (e.key === "Escape" && document.querySelector("dialog[open]")) return;
   const typing = e.target.closest("input, textarea, select");
   if (e.key === "Escape" && state.menu) { closeMenu(); return; }
@@ -1750,6 +1752,7 @@ function renderWorkspaceView() {
   else if (state.project === "@timeline") $("#dashboard").replaceChildren(timelinePanel(false));
   else if (state.project === "@calendar") renderCalendar();
   else if (state.project === "@time") renderTimeView();
+  else if (state.project === "@feedback") renderFeedbackView();
   else renderProjectList();
 }
 function renderDateControls() {
@@ -1888,6 +1891,258 @@ function timeEntryRow(entry) {
   return el("div", { class: "time-entry-row" }, task ? taskButton(task) : el("span", {}, `Task #${entry.task_id}`), el("span", { class: "status-pill" }, `${entry.actor} · ${entry.kind}`), el("span", { class: "duration", "data-timer-id": running ? entry.id : null }, running ? shortDuration(elapsedSeconds(entry)) + " running" : shortDuration(entry.seconds)), el("small", {}, entry.note || ""), running && entry.actor === "human" ? el("button", { class: "btn quiet", onclick: () => stopTimer(entry) }, "Stop") : null);
 }
 
+
+// ---------- attributed feedback and human-reviewed lessons ----------
+const feedbackState = { q: "", status: "open", project: "all", kind: "", limit: 20, offset: 0,
+  page: null, signature: "", request: 0, focusAction: "", reportDraft: null, reportRequest: null };
+const feedbackReviewDrafts = new Map();
+let feedbackQueryTimer, feedbackDetailRequest = 0, feedbackDialogReturn = null;
+
+function feedbackSelect(label, name, values, value = "") {
+  const select = el("select", { class: "field", name, "aria-label": label },
+    ...values.map(([id, text]) => el("option", { value: id }, text)));
+  select.value = value;
+  return el("label", { class: "form-field" }, el("span", {}, label), select);
+}
+function feedbackEvidence(value) {
+  return value.split("\n").filter((line) => line.trim()).map((line) => {
+    const [kind, label, ...path] = line.split("|").map((part) => part.trim());
+    if (!kind || !label || !path.join("|")) throw new Error("Evidence needs kind | label | URL or path, one reference per line.");
+    return { kind, label, path: path.join("|") };
+  });
+}
+function feedbackRefs(refs = []) {
+  return refs.length ? el("ul", { class: "feedback-evidence" }, ...refs.map((ref) => el("li", {},
+    el("strong", {}, ref.label || ref.kind || "Evidence"), el("code", {}, ref.path))))
+    : el("p", { class: "workspace-subtitle" }, "No evidence references recorded.");
+}
+function feedbackTextRefs(refs = []) { return refs.map((ref) => `${ref.kind} | ${ref.label} | ${ref.path}`).join("\n"); }
+function feedbackField(label, name, value = "", type = "text", max = 4000) {
+  const field = inputField(label, name, value, type), control = field.querySelector("input,textarea");
+  if (type !== "number") control.maxLength = max;
+  return field;
+}
+function feedbackInteger(form, name) {
+  const value = formValue(form, name); if (!value) return null;
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id < 1) throw new Error("Task IDs must be positive whole numbers.");
+  return id;
+}
+function invalidateFeedback() { feedbackState.signature = ""; ++feedbackState.request; }
+function changeFeedbackFilter(field, value) {
+  feedbackState[field] = value; feedbackState.offset = 0; invalidateFeedback();
+  $("#feedback-results")?.replaceChildren(el("p", { class: "workspace-subtitle" }, "Loading matching reports…"));
+  $("#feedback-pagination")?.replaceChildren(); renderFeedbackView();
+}
+function renderFeedbackView() {
+  const dashboard = $("#dashboard");
+  let root = $("#feedback-workspace");
+  if (!root) {
+    invalidateFeedback();
+    const query = el("input", { id: "feedback-query", class: "field", type: "search", maxlength: 200,
+      placeholder: "Search feedback…", "aria-label": "Search feedback" });
+    query.addEventListener("input", (event) => {
+      feedbackState.q = event.target.value; feedbackState.offset = 0; invalidateFeedback();
+      $("#feedback-results").replaceChildren(el("p", { class: "workspace-subtitle" }, "Searching feedback…"));
+      $("#feedback-pagination").replaceChildren(); clearTimeout(feedbackQueryTimer);
+      feedbackQueryTimer = setTimeout(renderFeedbackView, 150);
+    });
+    const filters = [
+      feedbackSelect("Review state", "status", [["open", "Open reports"], ["triaged", "Triaged"], ["verified", "Verified lessons"], ["dismissed", "Dismissed"], ["all", "All states"]], feedbackState.status),
+      feedbackSelect("Project", "project", [["all", "All projects"], ...state.board.projects.map((p) => [p.slug, p.name])], feedbackState.project),
+      feedbackSelect("Kind", "kind", [["", "All kinds"], ...["bug", "friction", "suggestion", "lesson"].map((x) => [x, x])], feedbackState.kind),
+    ];
+    for (const wrapper of filters) wrapper.querySelector("select").addEventListener("change", (event) => changeFeedbackFilter(event.target.name, event.target.value));
+    filters[1].querySelector("select").addEventListener("blur", () => { if (state.project === "@feedback") renderFeedbackView(); });
+    root = el("section", { id: "feedback-workspace", class: "feedback-workspace" },
+      el("div", { class: "feedback-intro" }, el("p", { class: "workspace-subtitle" }, "Reports guide improvements. Verified lessons require evidence and version review; reports never change project instructions automatically."),
+        el("button", { id: "feedback-report", class: "btn primary", onclick: () => showFeedbackReport() }, "Report feedback")),
+      el("div", { class: "feedback-filters" }, query, ...filters),
+      el("p", { id: "feedback-state", class: "workspace-subtitle", role: "status" }),
+      el("div", { id: "feedback-pagination" }), el("div", { id: "feedback-results", class: "feedback-results" }));
+    dashboard.replaceChildren(root);
+  }
+  if (document.activeElement !== $("#feedback-query")) $("#feedback-query").value = feedbackState.q;
+  const projectSelect = root.querySelector('select[name="project"]');
+  if (document.activeElement !== projectSelect) {
+    const options = [["all", "All projects"], ...state.board.projects.map((p) => [p.slug, p.name])];
+    if (feedbackState.project !== "all" && !options.some(([slug]) => slug === feedbackState.project)) options.push([feedbackState.project, `${feedbackState.project} (historical)`]);
+    const signature = JSON.stringify(options);
+    if (projectSelect.dataset.options !== signature) {
+      projectSelect.replaceChildren(...options.map(([value, label]) => el("option", { value }, label)));
+      projectSelect.dataset.options = signature;
+    }
+  }
+  for (const name of ["status", "project", "kind"]) {
+    const select = root.querySelector(`select[name="${name}"]`);
+    if (document.activeElement !== select) select.value = feedbackState[name];
+  }
+  const signature = JSON.stringify([feedbackState.q, feedbackState.status, feedbackState.project, feedbackState.kind,
+    feedbackState.limit, feedbackState.offset, state.changes]);
+  if (signature !== feedbackState.signature) { feedbackState.signature = signature; fetchFeedbackPage(signature); }
+}
+async function fetchFeedbackPage(signature) {
+  const request = ++feedbackState.request;
+  $("#feedback-state").textContent = "Loading feedback…";
+  const params = new URLSearchParams({ q: feedbackState.q.trim(), status: feedbackState.status, project: feedbackState.project,
+    kind: feedbackState.kind, limit: String(feedbackState.limit), offset: String(feedbackState.offset) });
+  try {
+    const page = await api("GET", "/feedback?" + params);
+    if (request !== feedbackState.request || signature !== feedbackState.signature || state.project !== "@feedback") return;
+    if (page.total && page.offset >= page.total) {
+      feedbackState.offset = Math.floor((page.total - 1) / feedbackState.limit) * feedbackState.limit;
+      invalidateFeedback(); renderFeedbackView(); return;
+    }
+    feedbackState.page = page;
+    $("#feedback-state").textContent = `${page.total} matching reports · Kanzo ${page.app_version}`;
+    renderFeedbackPager(page);
+    $("#feedback-results").replaceChildren(...(page.items.length ? page.items.map((report) => feedbackCard(report, page.app_version))
+      : [emptyState("No matching feedback", "Try another state or project, or record a specific observation.")]));
+    if (feedbackState.focusAction && !document.querySelector("dialog[open]")) {
+      const nav = $("#feedback-pagination");
+      const target = nav.querySelector(`[data-feedback-action="${feedbackState.focusAction}"]:not(:disabled)`) || nav.querySelector("select");
+      target?.focus({ preventScroll: true }); nav.scrollIntoView({ block: "nearest" });
+    }
+    feedbackState.focusAction = "";
+  } catch (error) {
+    if (request !== feedbackState.request || state.project !== "@feedback") return;
+    $("#feedback-state").textContent = "Feedback could not be loaded.";
+    $("#feedback-pagination").replaceChildren();
+    $("#feedback-results").replaceChildren(el("p", { class: "error", role: "alert" }, error.message),
+      el("button", { class: "btn quiet", onclick: () => { invalidateFeedback(); renderFeedbackView(); } }, "Retry feedback"),
+      el("button", { class: "btn quiet", onclick: () => { feedbackState.limit = 10; feedbackState.offset = 0; invalidateFeedback(); renderFeedbackView(); } }, "Use 10 per page"));
+  }
+}
+function renderFeedbackPager(page) {
+  const move = (offset, action) => {
+    feedbackState.offset = offset; feedbackState.focusAction = action; invalidateFeedback(); renderFeedbackView();
+    $("#feedback-pagination").scrollIntoView({ block: "nearest" });
+  };
+  const size = el("select", { class: "pagination-size", "aria-label": "Feedback items per page",
+    "data-feedback-action": "size", onchange: (event) => { feedbackState.limit = Number(event.target.value); move(0, "size"); } },
+    ...[10, 20, 50].map((n) => el("option", { value: n }, `${n} per page`)));
+  size.value = String(feedbackState.limit);
+  $("#feedback-pagination").replaceChildren(el("nav", { class: "pagination", "aria-label": "Feedback pagination" },
+    el("span", { class: "pagination-summary" }, `${page.total ? page.offset + 1 : 0}–${page.offset + page.items.length} of ${page.total}`),
+    el("div", { class: "pagination-controls" },
+      el("button", { class: "btn quiet", "data-feedback-action": "previous", disabled: page.offset === 0, onclick: () => move(Math.max(0, page.offset - page.limit), "previous") }, "Previous"),
+      el("span", { class: "pagination-page" }, `Page ${Math.floor(page.offset / page.limit) + 1} of ${Math.max(1, Math.ceil(page.total / page.limit))}`),
+      el("button", { class: "btn quiet", "data-feedback-action": "next", disabled: !page.has_more, onclick: () => move(page.offset + page.limit, "next") }, "Next"), size)));
+}
+function feedbackCard(report, currentVersion) {
+  const review = report.latest_review, status = report.status || review?.decision || "open";
+  const stale = status === "verified" && review?.applies_to_version !== currentVersion;
+  const historicalProject = report.project_id != null && state.board.projects.find((p) => p.slug === report.project)?.id !== report.project_id;
+  return el("article", { class: "workspace-card feedback-card", "data-feedback-id": report.id },
+    el("div", { class: "feedback-card-head" }, el("button", { class: "feedback-title", onclick: () => openFeedbackDetail(report.id) }, `#${report.id} · ${report.summary}`),
+      el("span", { class: "status-pill" }, status), el("span", { class: "status-pill" }, report.kind), el("span", { class: "feedback-severity" }, report.severity)),
+    el("p", { class: "feedback-observed" }, report.observed),
+    el("div", { class: "feedback-meta" }, el("span", {}, report.project), el("span", {}, `Reported by ${report.reporter}`),
+      el("span", {}, new Date(report.created_at).toLocaleString()), el("span", {}, `Observed version: ${report.observed_version || "not recorded"}`),
+      el("span", {}, `Reported using ${report.app_version}`)),
+    historicalProject ? el("p", { class: "feedback-version-note" }, "Historical project identity · excluded from replacement-project context.") : null,
+    review?.lesson ? el("p", { class: "feedback-lesson-preview" }, review.lesson) : null,
+    stale ? el("p", { class: "feedback-version-note" }, `Reviewed for ${review.applies_to_version}; recheck before reuse on ${currentVersion}.`) : null,
+    el("button", { class: "btn quiet feedback-open", onclick: () => openFeedbackDetail(report.id) }, "Inspect & review"));
+}
+function showFeedbackReport(project) {
+  const selected = project || (feedbackState.project !== "all" ? feedbackState.project : state.board.projects.some((p) => p.slug === "kanzo") ? "kanzo" : state.board.projects[0]?.slug || "");
+  const draft = feedbackState.reportDraft || { project: selected, reporter: "local-user", kind: "friction", severity: "normal", observed_version: feedbackState.page?.app_version || state.board.version || "" };
+  feedbackState.reportRequest ||= requestId();
+  const fields = [
+    feedbackSelect("Project", "project", state.board.projects.map((p) => [p.slug, p.name]), draft.project),
+    feedbackField("Related task ID (optional)", "task_id", draft.task_id, "number"),
+    feedbackField("Reporter", "reporter", draft.reporter, "text", 80),
+    feedbackSelect("Kind", "kind", ["bug", "friction", "suggestion", "lesson"].map((x) => [x, x]), draft.kind),
+    feedbackSelect("Severity", "severity", ["low", "normal", "high"].map((x) => [x, x]), draft.severity),
+    feedbackField("Summary", "summary", draft.summary, "text", 180),
+    feedbackField("Observed behaviour", "observed", draft.observed, "textarea"),
+    feedbackField("Expected behaviour", "expected", draft.expected, "textarea"),
+    feedbackField("Reproduction steps", "reproduction", draft.reproduction, "textarea"),
+    feedbackField("Proposed improvement", "proposed_change", draft.proposed_change, "textarea"),
+    feedbackField("Source revision", "source_revision", draft.source_revision, "text", 128),
+    feedbackField("Observed Kanzo version", "observed_version", draft.observed_version, "text", 80),
+    feedbackField("Evidence references · kind | label | URL or path", "evidence_text", draft.evidence_text, "textarea", 9000),
+    el("p", { class: "workspace-subtitle" }, "Describe an observation, not a command. Evidence is referenced by URL or path; its files are not read. Reporter names are attribution.")];
+  for (const name of ["project", "reporter", "summary", "observed"]) fields.flatMap((field) => [...field.querySelectorAll(`[name="${name}"]`)]).forEach((control) => { control.required = true; });
+  const capture = (form) => Object.fromEntries([...form.elements].filter((control) => control.name).map((control) => [control.name, control.value]));
+  openWorkDialog("Report feedback", fields, async (form) => {
+    feedbackState.reportDraft = capture(form);
+    const payload = { ...feedbackState.reportDraft, task_id: feedbackInteger(form, "task_id"),
+      evidence: feedbackEvidence(formValue(form, "evidence_text")), request_id: feedbackState.reportRequest };
+    delete payload.evidence_text;
+    await api("POST", "/feedback", payload);
+    feedbackState.reportDraft = null; feedbackState.reportRequest = null; invalidateFeedback(); toast("Feedback recorded for review.");
+  }, "Submit report");
+  for (const field of fields) field.querySelectorAll("input,select,textarea").forEach((control) => control.addEventListener("input", () => { feedbackState.reportDraft = capture($("#work-dialog-form")); }));
+}
+function closeFeedbackDetail() { $("#feedback-dialog").close(); ++feedbackDetailRequest; const target = feedbackDialogReturn?.isConnected ? feedbackDialogReturn : $("#feedback-report"); target?.focus?.({ preventScroll: true }); }
+$("#feedback-detail-close").addEventListener("click", closeFeedbackDetail);
+$("#feedback-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeFeedbackDetail(); });
+async function openFeedbackDetail(id, reloading = false) {
+  const request = ++feedbackDetailRequest;
+  if (!$("#feedback-dialog").open) { feedbackDialogReturn = document.activeElement; $("#feedback-dialog").showModal(); }
+  $("#feedback-detail-title").textContent = `Feedback #${id}`;
+  $("#feedback-detail-body").replaceChildren(el("p", { class: "workspace-subtitle" }, "Loading report…"));
+  try {
+    const packet = await api("GET", `/feedback/${id}`);
+    if (request !== feedbackDetailRequest || !$("#feedback-dialog").open) return;
+    renderFeedbackDetail(packet, reloading);
+  } catch (error) {
+    if (request !== feedbackDetailRequest || !$("#feedback-dialog").open) return;
+    $("#feedback-detail-body").replaceChildren(el("p", { class: "error", role: "alert" }, error.message),
+      el("button", { class: "btn quiet", onclick: () => openFeedbackDetail(id, true) }, "Reload report"));
+  }
+}
+function renderFeedbackDetail(packet, reloading) {
+  const report = packet.report, latest = packet.latest_review, version = packet.app_version;
+  const draft = feedbackReviewDrafts.get(report.id) || { decision: "triaged", reviewer: "local-owner", note: "", lesson: "", evidence_text: "", applies_to_version: version, followup_task_id: "" };
+  $("#feedback-detail-title").textContent = `Feedback #${report.id}`;
+  const facts = el("div", { class: "feedback-meta" }, ...[report.project, report.kind, report.severity, `Reported by ${report.reporter}`,
+    `Observed: ${report.observed_version || "not recorded"}`, `Reported using ${report.app_version}`, new Date(report.created_at).toLocaleString()].map((x) => el("span", {}, x)));
+  const observation = el("section", { class: "feedback-detail-report" }, el("h3", { class: "feedback-summary" }, report.summary), facts,
+    ...[["Observed", report.observed], ["Expected", report.expected], ["Reproduction", report.reproduction], ["Proposed improvement", report.proposed_change], ["Source revision", report.source_revision]].filter(([, value]) => value).map(([label, value]) => el("section", { class: "context-block" }, el("h3", {}, label), el("p", {}, value))),
+    el("section", { class: "context-block" }, el("h3", {}, "Evidence references"), feedbackRefs(report.evidence)),
+    report.task_id ? el("button", { class: "btn quiet", onclick: () => { closeFeedbackDetail(); setProject(report.project); openTask(report.task_id); } }, `Open ${report.project}#${report.task_id}`) : null);
+  const form = el("form", { id: "feedback-review-form", class: "feedback-review-form" },
+    el("h3", {}, "Human review"), el("p", { class: "workspace-subtitle" }, "Use evidence to review the observation. Verified lessons apply only to the specified version; they do not override project instructions."),
+    reloading ? el("p", { class: "feedback-version-note" }, "Latest review refreshed. Your draft is retained; recheck it before saving.") : null,
+    latest ? el("div", { class: "feedback-latest" }, el("strong", {}, `Latest review: ${latest.decision} · revision ${packet.review_revision}`), el("p", {}, latest.note),
+      latest.lesson ? el("p", {}, latest.lesson) : null, el("small", {}, `${latest.reviewer} · ${latest.reviewed_at}${latest.applies_to_version ? ` · applies to ${latest.applies_to_version}` : ""}`)) : el("p", { class: "workspace-subtitle" }, "No review recorded yet."),
+    feedbackSelect("Decision", "decision", [["triaged", "Triaged"], ["verified", "Verified lesson"], ["dismissed", "Dismissed"], ["open", "Reopen"]], draft.decision),
+    feedbackField("Reviewer", "reviewer", draft.reviewer, "text", 80), feedbackField("Review note", "note", draft.note, "textarea"),
+    feedbackField("Verified lesson", "lesson", draft.lesson, "textarea", 1200),
+    feedbackField("Evidence · kind | label | URL or path", "evidence_text", draft.evidence_text, "textarea", 9000),
+    feedbackField("Applies to Kanzo version", "applies_to_version", draft.applies_to_version, "text", 80),
+    feedbackField("Follow-up task ID (optional)", "followup_task_id", draft.followup_task_id, "number"),
+    el("p", { id: "feedback-review-error", class: "error", role: "alert", hidden: true }),
+    el("div", { class: "feedback-review-actions" }, el("button", { class: "btn quiet", type: "button", onclick: () => openFeedbackDetail(report.id, true) }, "Reload latest review"),
+      el("button", { id: "feedback-review-save", class: "btn primary", type: "submit" }, "Save review")));
+  for (const name of ["reviewer", "note"]) form.elements.namedItem(name).required = true;
+  const capture = () => feedbackReviewDrafts.set(report.id, Object.fromEntries([...form.elements].filter((x) => x.name).map((x) => [x.name, x.value])));
+  form.addEventListener("input", capture); form.addEventListener("change", capture);
+  const updateRequired = () => { const verified = formValue(form, "decision") === "verified";
+    for (const name of ["lesson", "evidence_text", "applies_to_version"]) form.elements.namedItem(name).required = verified; };
+  form.elements.namedItem("decision").addEventListener("change", updateRequired); updateRequired();
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = form.querySelector("#feedback-review-save"); if (button.disabled) return;
+    capture(); button.disabled = true;
+    try {
+      const evidence = feedbackEvidence(formValue(form, "evidence_text"));
+      if (formValue(form, "decision") === "verified" && (!evidence.length || !formValue(form, "lesson") || !formValue(form, "applies_to_version"))) throw new Error("A verified lesson needs evidence, lesson text and its exact applicable version.");
+      await api("POST", `/feedback/${report.id}/review`, { expected_revision: packet.review_revision,
+        decision: formValue(form, "decision"), reviewer: formValue(form, "reviewer"), note: formValue(form, "note"),
+        lesson: formValue(form, "lesson"), evidence, applies_to_version: formValue(form, "applies_to_version"), followup_task_id: feedbackInteger(form, "followup_task_id") });
+      feedbackReviewDrafts.delete(report.id); invalidateFeedback(); await openFeedbackDetail(report.id); if (state.project === "@feedback") renderFeedbackView(); toast("Review recorded.");
+    } catch (error) { const target = form.querySelector("#feedback-review-error"); target.textContent = error.message; target.hidden = false; }
+    finally { if (button.isConnected) button.disabled = false; }
+  });
+  const history = el("section", { class: "feedback-history" }, el("h3", {}, "Review history"),
+    ...(packet.review_history || []).map((review) => el("details", {}, el("summary", {}, `Revision ${review.revision} · ${review.decision} · ${review.reviewer}`), el("p", {}, review.note), review.lesson ? el("p", {}, review.lesson) : null, feedbackRefs(review.evidence), el("small", {}, `${review.reviewed_at}${review.applies_to_version ? ` · ${review.applies_to_version}` : ""}`))),
+    !(packet.review_history || []).length ? el("p", { class: "workspace-subtitle" }, "No review history yet.") : null,
+    packet.review_window?.truncated ? el("p", { class: "workspace-subtitle" }, "Only the latest review history window is shown.") : null);
+  $("#feedback-detail-body").replaceChildren(el("div", { class: "feedback-detail-grid" }, observation, el("div", {}, form, history)));
+}
 
 // ---------- project briefs, task plans, context and explicit time ----------
 function inputField(label, name, value = "", type = "text", hint = "") {
@@ -2066,7 +2321,18 @@ function renderContextDetail(task, context) {
   $("#task-context-detail").replaceChildren(sectionHead("Selected task context", el("button", { class: "btn primary", onclick: () => copyContext(context) }, "Copy agent brief")), el("p", { class: "context-lineage" }, `${task.project} → ${lineage}`),
     ...[["Source", [profile.source_path, profile.source_revision].filter(Boolean).join(" · ") || "Not recorded"], ["Project instructions", (profile.instructions || []).join("\n") || "None selected"], ["Relevant skills", (profile.skills || []).join("\n") || "None selected"], ["Dated memory references", (profile.memories || []).join("\n") || "None selected"]].map(([label, value]) => el("section", { class: "context-block" }, el("h3", {}, label), el("p", {}, value))),
     el("section", { class: "context-block" }, el("h3", {}, "Task-specific references"), ...(plan.context_links || []).map((link) => el("p", {}, el("strong", {}, link.label + " · "), el("code", {}, link.path))), ...(!(plan.context_links || []).length ? [el("p", {}, "No task-specific references selected.")] : [])),
+    feedbackContextBlock(task, context.feedback),
     el("p", { class: "workspace-subtitle" }, "This packet contains selected task/project references. It does not load files or grant execution authority."));
+}
+function feedbackContextBlock(task, feedback) {
+  const lessons = feedback?.verified_lessons || [], counts = feedback?.counts || {};
+  return el("section", { class: "context-block feedback-context-block" }, el("h3", {}, "Reviewed feedback lessons"),
+    ...lessons.map((lesson) => el("article", { class: "feedback-context-lesson" }, el("strong", {}, lesson.summary),
+      el("p", {}, lesson.lesson), el("small", {}, `Reviewed for ${lesson.applies_to_version} · ${lesson.reviewer}`), feedbackRefs(lesson.evidence))),
+    ...(!lessons.length ? [el("p", {}, "No reviewed lessons match this Kanzo version.")] : []),
+    feedback?.historical_verified ? el("p", { class: "workspace-subtitle" }, `${feedback.historical_verified} older verified lessons need a version check.`) : null,
+    el("p", { class: "workspace-subtitle" }, `${counts.open || 0} open reports · ${counts.triaged || 0} triaged. Lessons are selected context, not instruction authority.`),
+    el("button", { class: "btn quiet", onclick: () => { feedbackState.project = task.project; feedbackState.status = "all"; feedbackState.q = ""; feedbackState.kind = ""; feedbackState.offset = 0; invalidateFeedback(); closeTask(); setProject("@feedback"); } }, "View project feedback"));
 }
 async function copyContext(context) {
   const text = JSON.stringify(context, null, 2);

@@ -1,6 +1,6 @@
 [package]
 name = "kanzo"
-version = "0.3.0-harness.5"
+version = "0.3.0-harness.6"
 edition = "2024"
 rust-version = "1.89"
 description = "Local portfolio planning, schedules, time tracking and task context for humans and coding agents."

@@ -126,3 +126,29 @@ Scope: desktop native gestures in the current Chromium browser at 855×932;
 other engines and physical touch devices are not qualified by these receipts.
 The earlier pointer gap remains historical evidence for 6172baa and is superseded
 by this executed matrix for the corrected build. No real task was moved for QA.
+
+## Reviewed feedback and harness skill — 2 November 2026
+
+The `0.3.0-harness.6` change passed 53 native tests, Clippy/formatting,
+15 frontend tests and ten HTTP/MCP groups. The final UI release was rebuilt and
+frontend/API checks passed again after scoped layout/navigation fixes.
+
+Coverage includes report replay/conflict and concurrent retry, immutable history,
+review revision conflicts, explicit evidence/version requirements, latest-decision
+withdrawal, project deletion/recreation identity, bounded context/history/pages,
+and preservation of old shared rows through additive schema 8/compatible 7 migration.
+MCP explicit-project replay after deletion matches HTTP; no review tool is exposed.
+
+Real copied-board browser flows covered report submission, triage, stale-review
+error with draft preservation, explicit reload and current-version verification,
+selected Context lessons, historical-version exclusion, original-project labels,
+large-page rejection/recovery and pagination. A 180-character summary was reviewed
+at 320×568 with a 49px header and scrollable 501px body; saved review history was
+read back independently. Context navigation clears incompatible feedback filters,
+new project options refresh, and an inherited native task drag still succeeded.
+
+The portable skill passed structural validation and an independent read-only
+scenario check preserving task identity, planning scope and uncertainty while
+rejecting authority claims in open/stale feedback. This does not prove automatic
+skill discovery, model training or a causal quality/token benefit. Synthetic
+review attestations stayed in disposable data; real reports require owner review.

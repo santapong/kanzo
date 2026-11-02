@@ -137,6 +137,10 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/query", get(query_tasks))
         .route("/api/tags", get(query_tags))
         .route("/api/projects/{slug}/context", get(project_context))
+        .route("/api/feedback", get(list_feedback).post(report_feedback).layer(DefaultBodyLimit::max(20 * 1024)))
+        .route("/api/feedback/{id}", get(get_feedback))
+        .route("/api/feedback/{id}/review", post(review_feedback).layer(DefaultBodyLimit::max(20 * 1024)))
+        .route("/api/projects/{slug}/feedback-context", get(feedback_context))
         .route("/api/harness", get(harness))
         .route("/api/projects/{slug}/profile", get(project_profile).put(save_project_profile))
         .route("/api/tasks/{id}/plan", get(task_plan).put(save_task_plan))
@@ -253,6 +257,30 @@ type Shared = State<Arc<Home>>;
 // are checked in the transaction rather than trusting a particular client.
 async fn harness(State(home): Shared) -> Response {
     with_store(home, |_, s| s.harness_snapshot()).await
+}
+
+async fn report_feedback(State(home): Shared, Json(input): Json<crate::feedback::FeedbackInput>) -> Response {
+    with_store(home, move |_, s| s.report_feedback(input)).await
+}
+async fn list_feedback(State(home): Shared, Query(query): Query<crate::feedback::FeedbackQuery>) -> Response {
+    with_store(home, move |_, s| s.list_feedback(&query)).await
+}
+async fn get_feedback(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.get_feedback(id)).await
+}
+async fn review_feedback(
+    State(home): Shared,
+    Path(id): Path<i64>,
+    Json(input): Json<crate::feedback::FeedbackReviewInput>,
+) -> Response {
+    with_store(home, move |_, s| s.review_feedback(id, input)).await
+}
+async fn feedback_context(State(home): Shared, Path(slug): Path<String>) -> Response {
+    with_store(home, move |_, s| {
+        s.find_project(&slug)?;
+        s.feedback_context(&slug)
+    })
+    .await
 }
 
 async fn project_profile(State(home): Shared, Path(slug): Path<String>) -> Response {

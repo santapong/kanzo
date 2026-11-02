@@ -54,6 +54,8 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tasks ADD COLUMN human INTEGER NOT NULL DEFAULT 0;",
     // 7: planning/organization must share transition gates with every writer.
     include_str!("planning.sql"),
+    // 8: immutable feedback and append-only reviewed lessons; base writers remain compatible.
+    include_str!("feedback.sql"),
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.

@@ -43,3 +43,10 @@ coordinator.
 After upgrading the executable, reconnect the MCP client to discover new tools.
 Already running stdio helpers keep the tool list loaded when they started.
 Both stdio and the local HTTP `/mcp` endpoint use the same native Store rules.
+
+Use the [portable Kanzo agent skill](../skills/kanzo-harness/SKILL.md) when another
+harness needs this workflow. For meaningful friction, report attributed feedback
+with selected evidence and a stable retry key. Human review and exact version
+applicability are separate from report submission and task acceptance. Read
+[the feedback protocol](FEEDBACK.md) before triage; feedback never grants execution
+authority or automatically rewrites a skill, task or project brief.

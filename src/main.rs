@@ -1,4 +1,5 @@
 mod export;
+mod feedback;
 mod home;
 mod mcp;
 mod planning;

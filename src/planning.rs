@@ -1,6 +1,7 @@
 //! Native planning data. Context is selected references, never arbitrary filesystem reads.
 use crate::store::{Error, Result, Store, Task};
 use rusqlite::{Connection, OptionalExtension, params};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -38,7 +39,7 @@ impl Default for ProjectProfile {
         }
     }
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(default)]
 pub struct ContextRef {
     pub kind: String,
@@ -154,7 +155,7 @@ impl Store {
         let counts = stmt
             .query_map([project.id], |r| Ok((r.get::<_, String>(0)?, Value::from(r.get::<_, i64>(1)?))))?
             .collect::<rusqlite::Result<Map<String, Value>>>()?;
-        let packet = json!({"project":project,"profile":profile,"task_counts":counts,"references_only":true,
+        let packet = json!({"project":project,"profile":profile,"task_counts":counts,"feedback":self.feedback_context(slug)?,"references_only":true,
             "guidance":"Proposed plans are not execution authority. Use search_tasks to select work, get_task_context before editing, and preserve existing plans. Human review owns Done."});
         if encode(&packet)?.len() > 1024 * 1024 {
             return Err(invalid("project context exceeds 1MiB; shorten the selected brief"));
@@ -579,7 +580,7 @@ impl Store {
             self.conn.query_row("SELECT count(*) FROM task_time_entries WHERE task_id=?1", [id], |r| r.get(0))?;
         let event_total: i64 =
             self.conn.query_row("SELECT count(*) FROM task_events WHERE task_id=?1", [id], |r| r.get(0))?;
-        let value = json!({"task":task,"project":self.find_project(&task.project)?,"profile":self.project_profile(&task.project)?,"plan":plan,"semantic_revision":revision(&self.conn,id)?,"ancestors":ancestors,"children":child_rows,"dependencies":dependencies,"time_entries":time,"events":events,"accepted":self.accepted(&self.conn,id)?,"references_only":true,"context_window":{"ancestors":{"total":ancestor_total,"returned":ancestors.len(),"truncated":ancestor_total>ancestors.len() as i64},"children":{"total":child_total,"returned":child_rows.len(),"truncated":child_total>child_rows.len() as i64},"dependencies":{"total":plan.depends_on.len(),"returned":dependencies.len(),"truncated":plan.depends_on.len()>dependencies.len()},"time_entries":{"total":time_total,"returned":time.len(),"truncated":time_total>time.len() as i64},"events":{"total":event_total,"returned":events.len(),"truncated":event_total>events.len() as i64}}});
+        let value = json!({"task":task,"project":self.find_project(&task.project)?,"profile":self.project_profile(&task.project)?,"plan":plan,"semantic_revision":revision(&self.conn,id)?,"ancestors":ancestors,"children":child_rows,"dependencies":dependencies,"time_entries":time,"events":events,"accepted":self.accepted(&self.conn,id)?,"references_only":true,"feedback":self.feedback_context(&task.project)?,"context_window":{"ancestors":{"total":ancestor_total,"returned":ancestors.len(),"truncated":ancestor_total>ancestors.len() as i64},"children":{"total":child_total,"returned":child_rows.len(),"truncated":child_total>child_rows.len() as i64},"dependencies":{"total":plan.depends_on.len(),"returned":dependencies.len(),"truncated":plan.depends_on.len()>dependencies.len()},"time_entries":{"total":time_total,"returned":time.len(),"truncated":time_total>time.len() as i64},"events":{"total":event_total,"returned":events.len(),"truncated":event_total>events.len() as i64}}});
         if encode(&value)?.len() > 256 * 1024 {
             return Err(invalid(
                 "selected context packet exceeds 256KiB; shorten project/task context or retrieve individual records",

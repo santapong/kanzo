@@ -182,6 +182,38 @@ def main():
                 assert [t["id"] for t in moved_board["tasks"] if t["status"] == "todo"] == [moving["id"], tail["id"]]
                 check("stale/deleted move anchors reject atomically; explicit append/self-anchor preserved")
 
+                before_feedback_tasks = request("GET", "/api/board?project=demo&done=all")["tasks"]
+                before_feedback_harness = request("GET", "/api/harness")
+                feedback_body = {"project":"demo", "task_id":child["id"], "reporter":"Fixture agent",
+                                 "kind":"friction", "summary":"Repeated context lookup", "observed":"A reproducible lookup needs clearer guidance",
+                                 "observed_version":"older-observed-version", "request_id":"http-feedback-1",
+                                 "evidence":[{"kind":"artifact","label":"Receipt","path":"fixtures/feedback.json"}]}
+                feedback = request("POST", "/api/feedback", feedback_body)
+                assert feedback["status"] == "open" and feedback["review_revision"] == 0
+                assert request("POST", "/api/feedback", feedback_body)["id"] == feedback["id"]
+                request("POST", "/api/feedback", dict(feedback_body, summary="Different payload"), expected=400)
+                request("POST", "/api/feedback", dict(feedback_body, project="moves", request_id="cross-project"), expected=400)
+                page = request("GET", "/api/feedback?project=demo&limit=1")
+                assert page["total"] == 1 and page["items"][0]["id"] == feedback["id"]
+                review_body = {"expected_revision":0, "decision":"verified", "reviewer":"Fixture owner", "note":"Evidence checked",
+                               "lesson":"Retrieve selected context before work", "evidence":feedback_body["evidence"],
+                               "applies_to_version":page["app_version"]}
+                request("POST", f"/api/feedback/{feedback['id']}/review", dict(review_body, evidence=[]), expected=400)
+                reviewed = request("POST", f"/api/feedback/{feedback['id']}/review", review_body)
+                assert reviewed["review_revision"] == 1 and reviewed["latest_review"]["decision"] == "verified"
+                request("POST", f"/api/feedback/{feedback['id']}/review", review_body, expected=400)
+                selected = request("GET", "/api/projects/demo/feedback-context")
+                assert selected["untrusted_data"] and selected["verified_lessons"][0]["id"] == feedback["id"]
+                assert request("GET", f"/api/tasks/{child['id']}/context")["feedback"]["verified_lessons"][0]["lesson"] == review_body["lesson"]
+                request("POST", f"/api/feedback/{feedback['id']}/review",
+                        {"expected_revision":1,"decision":"dismissed","reviewer":"Fixture owner","note":"Later evidence superseded this lesson"})
+                assert not request("GET", "/api/projects/demo/feedback-context")["verified_lessons"]
+                assert request("GET", f"/api/feedback/{feedback['id']}")["review_window"]["total"] == 2
+                assert request("GET", "/api/board?project=demo&done=all")["tasks"] == before_feedback_tasks
+                assert request("GET", "/api/harness") == before_feedback_harness
+                request("GET", "/api/feedback?limit=0", expected=400)
+                check("immutable/idempotent feedback, review CAS/versioned context, reversal and unchanged task data")
+
                 mcp_headers = {"Accept": "application/json, text/event-stream"}
                 def mcp(method, params, number):
                     data, h = request("POST", "/mcp", {"jsonrpc": "2.0", "id": number,
@@ -198,7 +230,7 @@ def main():
                                     "clientInfo": {"name": "kanzo-acceptance", "version": "1"}}, 1)
                 assert "result" in initialized
                 tools = mcp("tools/list", {}, 2)["result"]["tools"]
-                assert {"get_task_context", "update_task_plan", "create_subtask", "search_tasks", "list_tags", "get_project_context"} <= {t["name"] for t in tools}
+                assert {"get_task_context", "update_task_plan", "create_subtask", "search_tasks", "list_tags", "get_project_context", "report_feedback", "list_feedback", "get_feedback"} <= {t["name"] for t in tools}
                 packet = mcp("tools/call", {"name": "get_task_context", "arguments": {"id": f"demo#{child['id']}"}}, 3)
                 assert not packet["result"].get("isError") and profile["goal"] in json.dumps(packet)
                 result = mcp("tools/call", {"name":"search_tasks", "arguments":{"project":"demo","tag":"ui","limit":1}},4)["result"]
@@ -210,6 +242,33 @@ def main():
                 assert json.loads(result["content"][0]["text"])["profile"]["goal"] == profile["goal"]
                 result = mcp("tools/call", {"name":"search_tasks", "arguments":{"limit":101}},7)["result"]
                 assert result.get("isError")
+                assert "review_feedback" not in {t["name"] for t in tools}
+                result = mcp("tools/call", {"name":"report_feedback", "arguments":{"project":"demo","kind":"suggestion", "summary":"MCP reporting", "observed":"Selected evidence is useful", "request_id":"mcp-feedback-1"}},8)["result"]
+                assert not result.get("isError")
+                mcp_feedback = json.loads(result["content"][0]["text"])
+                assert mcp_feedback["reporter"] == "kanzo-acceptance" and mcp_feedback["status"] == "open"
+                result = mcp("tools/call", {"name":"list_feedback", "arguments":{"project":"demo"}},9)["result"]
+                assert json.loads(result["content"][0]["text"])["total"] == 1
+                result = mcp("tools/call", {"name":"get_feedback", "arguments":{"id":mcp_feedback["id"]}},10)["result"]
+                assert json.loads(result["content"][0]["text"])["report"]["summary"] == "MCP reporting"
+                request("POST", "/api/projects", {"slug":"feedback-history", "name":"Historical feedback"})
+                historical_args = {"project":"Feedback-History", "reporter":"Fixture MCP", "kind":"lesson",
+                                   "summary":"Historical replay", "observed":"Retain an immutable observation",
+                                   "request_id":"retained-mcp-replay"}
+                historical = mcp("tools/call", {"name":"report_feedback", "arguments":historical_args},11)["result"]
+                assert not historical.get("isError")
+                historical_report = json.loads(historical["content"][0]["text"])
+                assert historical_report["project"] == "feedback-history"
+                request("DELETE", "/api/projects/feedback-history")
+                retained = request("GET", f"/api/feedback/{historical_report['id']}")
+                replay = mcp("tools/call", {"name":"report_feedback", "arguments":historical_args},12)["result"]
+                assert not replay.get("isError")
+                assert json.loads(replay["content"][0]["text"]) == historical_report
+                conflict = mcp("tools/call", {"name":"report_feedback", "arguments":dict(historical_args, summary="Changed observation")},13)["result"]
+                assert conflict.get("isError") and "request_id" in conflict["content"][0]["text"]
+                assert request("GET", f"/api/feedback/{historical_report['id']}") == retained
+                new_report = mcp("tools/call", {"name":"report_feedback", "arguments":dict(historical_args, request_id="new-after-delete")},14)["result"]
+                assert new_report.get("isError"), "a replay is allowed; a new report still needs a live project"
                 check("native HTTP MCP initialization, discovery and context tool")
 
                 request("GET", "/api/harness", expected=403, headers={"Origin": "https://outside.example"}, raw=True)

@@ -51,6 +51,9 @@ New tools:
 | search_tasks | Search full history with shared filters and bounded pagination; active projects by default |
 | list_tags | Reuse exact tag names and full matching-set counts |
 | get_project_context | Read a compact project brief, selected references and status counts |
+| report_feedback | Submit an immutable attributed observation with an idempotency key |
+| list_feedback | Retrieve bounded project/status/kind feedback pages |
+| get_feedback | Read one report and append-only review history |
 
 The matching HTTP routes are GET `/api/harness`, GET/PUT
 `/api/projects/:slug/profile`, GET/PUT `/api/tasks/:id/plan`, GET
@@ -138,6 +141,14 @@ lesson references under the owner's existing learning rules. Attribution fields
 and evidence links are not authenticated identity or certified evidence.
 
 ## Migration and rollback
+
+Schema8 adds immutable feedback reports and append-only review events without
+changing shared task rows. Compatibility and the writer marker remain7 because
+existing task-transition invariants are unchanged. Old loaded clients do not
+discover the new feedback tools until reconnected. Complete DB backups/sync carry
+feedback; current task-oriented JSON/Markdown exports do not include those tables.
+Read [feedback and reviewed learning](FEEDBACK.md) and the
+[portable agent skill](../skills/kanzo-harness/SKILL.md) for the workflow.
 
 Stop all writers and back up the complete private data folder before migration.
 Additive tables preserve existing task IDs/content/comments; new events start
