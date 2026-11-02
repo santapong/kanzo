@@ -23,6 +23,10 @@ const state = {
   scope: "active",
   harness: { profiles: {}, plans: {}, time_entries: [], events: [] },
   statusFilter: "",
+  taskQuery: "",
+  tagFilter: "",
+  ownerFilter: "",
+  scheduleFilter: "",
   weekOffset: 0,
   monthOffset: 0,
   taskTab: "overview",
@@ -300,7 +304,7 @@ async function loadBoard() {
   try {
     // The server leaves out older done tasks unless asked: the board does not show
     // them, and the done column only grows. Search needs them all.
-    const done = (state.allDone || isPortfolioRoute(state.project)) ? "&done=all" : "";
+    const done = "&done=all"; // Filters and hierarchy checks need the complete project history.
     const [board, harness] = await Promise.all([
       api("GET", "/board?project=" + encodeURIComponent(isPortfolioRoute(state.project) ? "all" : state.project) + done),
       api("GET", "/harness"),
@@ -347,8 +351,7 @@ function setProject(slug) {
   if (["@dashboard", "all", "@projects", "@planning", "@timeline", "@calendar", "@time"].includes(slug)) state.scope = "active";
   else if (slug === "@review" || slug === "@archive") state.scope = slug.slice(1);
   else {
-    state.typeFilter = "";
-    state.statusFilter = "";
+    clearTaskFilters(false);
     if (state.board) state.scope = scopeForProject(slug);
   }
   try { localStorage.setItem("kanzo.project", slug); } catch {}
@@ -362,6 +365,7 @@ function render() {
   renderDateControls();
   renderTimerIndicator();
   renderHeader();
+  renderTaskFilters();
   if (state.project !== "all" && isPortfolioRoute(state.project)) {
     $("#columns").hidden = true;
     $("#dashboard").hidden = false;
@@ -394,17 +398,78 @@ function visibleProjects() {
   return scopeProjects().filter((p) => (!state.typeFilter || projectMeta(p).category === state.typeFilter) &&
     words.every((w) => [p.name, p.slug, ...p.repos, projectMeta(p).category].join(" ").toLowerCase().includes(w)));
 }
-function visibleTasks() {
-  if (!isPortfolioRoute(state.project)) return state.board.tasks;
-  const slugs = new Set(scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter).map((p) => p.slug));
-  return state.board.tasks.filter((t) => slugs.has(t.project) && (state.project !== "@planning" || t.status === "todo"));
+function taskScopeRows() {
+  if (!isPortfolioRoute(state.project)) return state.board?.tasks || [];
+  const slugs = new Set(scopeProjects().map((p) => p.slug));
+  return (state.board?.tasks || []).filter((t) => slugs.has(t.project));
 }
+function matchesTaskFilters(t) {
+  const p = planFor(t.id), words = state.taskQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const project = state.board?.projects.find((project) => project.slug === t.project);
+  const text = [key(t), t.title, t.description, ...t.tags, project?.name || ""].join(" ").toLowerCase();
+  const scheduled = !!(p.planned_start || p.planned_end || p.due_date);
+  return (!state.typeFilter || profileFor(t.project).category === state.typeFilter) &&
+    (!state.statusFilter || t.status === state.statusFilter) && (!state.tagFilter || t.tags.includes(state.tagFilter)) &&
+    (!state.ownerFilter || p.owner === state.ownerFilter) &&
+    (!state.scheduleFilter || (state.scheduleFilter === "yes") === scheduled) && words.every((word) => text.includes(word));
+}
+function visibleTasks() {
+  return taskScopeRows().filter((t) => matchesTaskFilters(t) && (state.project !== "@planning" || t.status === "todo"));
+}
+function hasTaskFilters() { return [state.taskQuery.trim(), state.statusFilter, state.typeFilter, state.tagFilter, state.ownerFilter, state.scheduleFilter].some(Boolean); }
+function clearTaskFilters(redraw = true) {
+  for (const field of ["taskQuery", "statusFilter", "typeFilter", "tagFilter", "ownerFilter", "scheduleFilter"]) state[field] = "";
+  if (redraw) { state.layout = ""; render(); }
+}
+function chooseTag(tag) { state.tagFilter = tag; closeTask(); render(); }
+function renderTaskFilters() {
+  const root = $("#task-filters"), hidden = ["@projects", "@review", "@archive"].includes(state.project);
+  root.hidden = hidden;
+  $("#filter-empty").hidden = true;
+  if (hidden) return;
+  const source = taskScopeRows();
+  const setOptions = (id, values, current, placeholder) => {
+    const select = $(id);
+    if (document.activeElement === select) return;
+    const items = [...new Set([...values.filter(Boolean), ...(current ? [current] : [])])].sort((a, b) => a.localeCompare(b));
+    select.replaceChildren(el("option", { value: "" }, placeholder), ...items.map((value) => el("option", { value }, value)));
+    select.value = current;
+  };
+  if (document.activeElement !== $("#task-query")) $("#task-query").value = state.taskQuery;
+  setOptions("#filter-status", state.board.statuses, state.statusFilter, "All states");
+  setOptions("#filter-type", scopeProjects().map((p) => profileFor(p.slug).category), state.typeFilter, "All types");
+  setOptions("#filter-tag", source.flatMap((t) => t.tags), state.tagFilter, "All tags");
+  setOptions("#filter-owner", source.map((t) => planFor(t.id).owner), state.ownerFilter, "All owners");
+  $("#filter-schedule").value = state.scheduleFilter;
+  const matches = visibleTasks(), base = source.filter((t) => state.project !== "@planning" || t.status === "todo");
+  const summaries = matches.filter((t) => childrenOf(t.id).length).length;
+  $("#filter-count").textContent = `${matches.length} of ${base.length} tasks${summaries ? ` · ${summaries} summaries` : ""}`;
+  $("#filters-clear").disabled = !hasTaskFilters();
+  const fields = [["taskQuery", "Search", state.taskQuery.trim()], ["statusFilter", "State", state.statusFilter], ["typeFilter", "Type", state.typeFilter], ["tagFilter", "Tag", state.tagFilter], ["ownerFilter", "Owner", state.ownerFilter], ["scheduleFilter", "Dates", state.scheduleFilter === "yes" ? "Scheduled" : state.scheduleFilter === "no" ? "Unscheduled" : ""]];
+  $("#filter-chips").replaceChildren(...fields.filter(([, , value]) => value).map(([field, label, value]) =>
+    el("button", { class: "filter-chip", "aria-label": `Remove ${label.toLowerCase()} filter: ${value}`, onclick: () => { state[field] = ""; state.layout = ""; render(); } }, `${label}: ${value} ×`)));
+  if (hasTaskFilters() && !matches.length) $("#filter-empty").hidden = false;
+  const tags = [...new Set((state.board?.tasks || []).flatMap((t) => t.tags))].sort();
+  $("#tag-suggestions").replaceChildren(...tags.map((tag) => el("option", { value: tag })));
+}
+let taskFilterTimer;
+$("#task-query").addEventListener("input", (e) => {
+  state.taskQuery = e.target.value;
+  clearTimeout(taskFilterTimer);
+  taskFilterTimer = setTimeout(render, 120);
+});
+for (const [id, field] of [["#filter-status", "statusFilter"], ["#filter-type", "typeFilter"], ["#filter-tag", "tagFilter"], ["#filter-owner", "ownerFilter"], ["#filter-schedule", "scheduleFilter"]]) {
+  $(id).addEventListener("change", (e) => { state[field] = e.target.value; state.layout = ""; render(); });
+}
+$("#filters-clear").addEventListener("click", () => clearTaskFilters());
+$("#filter-empty-clear").addEventListener("click", () => clearTaskFilters());
+$("#task-search-open").addEventListener("click", () => openSearch());
 function renderNav() {
   if (renaming && document.contains(renaming.input)) return;
   const projects = visibleProjects();
   const link = (slug, name, count, glyph) =>
     el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
-      onclick: (e) => { e.preventDefault(); if (isPortfolioRoute(slug)) { state.typeFilter = ""; state.statusFilter = ""; } setProject(slug); } },
+      onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph, el("span", { class: "name" }, name), el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
@@ -576,8 +641,7 @@ function renderHeader() {
     const list = scopeProjects().filter((p) => !state.typeFilter || projectMeta(p).category === state.typeFilter);
     header.replaceChildren(el("h1", {}, titles[state.project] || "Task board"),
       el("span", { class: "sub" }, state.project === "@dashboard" ? "Your projects. A clear next step." : `${list.length} projects`));
-    if (state.typeFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.typeFilter = ""; render(); } }, state.typeFilter + " ×"));
-    if (state.statusFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.statusFilter = ""; state.layout = ""; render(); } }, state.statusFilter + " ×"));
+    if (["@projects", "@review", "@archive"].includes(state.project) && state.typeFilter) header.append(el("button", { class: "filter-chip", onclick: () => { state.typeFilter = ""; render(); } }, state.typeFilter + " ×"));
     $("#project-notice").hidden = true;
     return;
   }
@@ -755,7 +819,7 @@ function card(t, showProject) {
       el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
-    t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("span", { class: "tag" }, tag))) : null);
+    t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("button", { type: "button", class: "tag", title: `Filter by tag: ${tag}`, onclick: (e) => { e.stopPropagation(); chooseTag(tag); } }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
     e.dataTransfer.effectAllowed = "move";
@@ -1195,39 +1259,64 @@ $("#p-delete").addEventListener("click", async () => {
 
 // The search window, as in ChatGPT: tasks of every project, found by the server, open
 // ones first. Arrows pick, Enter opens, Esc closes. Without words it shows the latest changes.
-let results = [], selected = 0, searchRequest = 0, searchTimer;
+let results = [], selected = 0, searchRequest = 0, searchTimer, searchOffset = 0, searchTotal = 0, searchReturnFocus;
 
 function openSearch() {
+  searchReturnFocus = document.activeElement;
   closeMenu();
   $("#search-dialog").hidden = false;
-  $("#search").value = "";
+  $("#search").value = state.taskQuery;
+  $("#search-scope").value = state.scope === "archive" ? "inactive" : state.scope === "review" ? "review" : "active";
   $("#search").focus();
   runSearch();
 }
 
 function closeSearch() {
+  ++searchRequest;
+  clearTimeout(searchTimer);
   $("#search-dialog").hidden = true;
+  if (searchReturnFocus?.isConnected) searchReturnFocus.focus();
 }
 
-async function runSearch() {
+function resetSearchResults() {
+  ++searchRequest;
+  results = []; selected = 0; searchOffset = 0; searchTotal = 0;
+  $("#search-results").replaceChildren();
+  $("#search-more").hidden = true;
+  $("#search-more").disabled = true;
+  $("#search-summary").textContent = "Searching…";
+}
+async function runSearch(append = false) {
+  if (!append) resetSearchResults();
   const q = $("#search").value.trim();
   const request = ++searchRequest;
+  const params = new URLSearchParams({ q, visibility: $("#search-scope").value, limit: "30", offset: String(searchOffset) });
+  $("#search-more").disabled = true;
+  $("#search-summary").textContent = "Searching…";
   try {
-    const board = await api("GET", "/board?project=all&done=all");
-    if (request !== searchRequest) return;
-    const permitted = new Set(scopeProjects().map((p) => p.slug));
-    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-    results = board.tasks.filter((t) => permitted.has(t.project) && words.every((w) => [key(t), t.title, t.description, ...t.tags].join(" ").toLowerCase().includes(w))).slice(0, 30);
+    const page = await api("GET", "/tasks/query?" + params);
+    if (request !== searchRequest || $("#search-dialog").hidden) return;
+    results = append ? [...results, ...page.tasks] : page.tasks;
+    searchOffset = page.offset + page.tasks.length;
+    searchTotal = page.total;
     selected = 0;
+    $("#search-summary").textContent = `${results.length} of ${searchTotal} matching tasks · includes completed work · view filters do not apply`;
+    $("#search-more").hidden = !page.has_more;
+    $("#search-more").disabled = false;
     $("#search-results").replaceChildren(
-      ...(results.length ? [el("div", { class: "label" }, q ? "Tasks" : "Browse tasks")] : []),
       ...results.map((t, i) => el("button", { type: "button", class: "result" + (i === 0 ? " selected" : ""),
-                                             onmousemove: () => select(i), onclick: () => pick(t) },
+        onmousemove: () => select(i), onclick: () => pick(t) },
         el("span", { class: "dot", style: `background:${projectColor(t.project)}` }),
         el("span", { class: "title" }, t.title),
         el("span", { class: "meta" }, el("span", { class: "mono" }, key(t)), t.status))),
-      ...(results.length ? [] : [el("div", { class: "note" }, q ? "No tasks match." : "No tasks yet.")]));
-  } catch (err) { toast(err.message); }
+      ...(results.length ? [] : [el("div", { class: "note" }, "No tasks match this search and project visibility.")]));
+  } catch (err) {
+    if (request !== searchRequest) return;
+    results = [];
+    $("#search-results").replaceChildren(el("div", { class: "note" }, err.message));
+    $("#search-summary").textContent = "Search could not finish. Try again.";
+    $("#search-more").hidden = true;
+  }
 }
 
 function select(i) {
@@ -1246,7 +1335,14 @@ function pick(t) {
 }
 
 $("#search-open").addEventListener("click", openSearch);
-$("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 120); });
+$("#search").addEventListener("input", () => {
+  clearTimeout(searchTimer); resetSearchResults();
+  searchTimer = setTimeout(() => runSearch(), 120);
+});
+$("#search-scope").addEventListener("change", () => { clearTimeout(searchTimer); runSearch(); });
+$("#search-more").addEventListener("click", () => runSearch(true));
+$("#search-close").addEventListener("click", closeSearch);
+$("#search-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closeSearch(); } });
 $("#search").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); select(selected + (e.key === "ArrowDown" ? 1 : -1)); }
   else if (e.key === "Enter" && results[selected]) { e.preventDefault(); pick(results[selected]); }
@@ -1520,7 +1616,7 @@ function planFor(id) {
 function taskById(id) { return state.board?.tasks.find((t) => t.id === Number(id)); }
 function allActiveTasks() {
   const projects = new Set(scopeProjects("active").filter((p) => !state.typeFilter || profileFor(p.slug).category === state.typeFilter).map((p) => p.slug));
-  return (state.board?.tasks || []).filter((t) => projects.has(t.project));
+  return (state.board?.tasks || []).filter((t) => projects.has(t.project) && matchesTaskFilters(t));
 }
 function childrenOf(id) { return (state.board?.tasks || []).filter((t) => planFor(t.id).parent_id === id); }
 function activeLeaves() { return allActiveTasks().filter((t) => !childrenOf(t.id).length); }
@@ -1577,7 +1673,7 @@ function renderDateControls() {
     el("div", { class: "date-stepper" }, el("button", { class: "btn quiet", "aria-label": "Previous period", onclick: () => step(-1) }, "‹"), el("button", { class: "btn quiet", "aria-label": "Next period", onclick: () => step(1) }, "›")), el("span", { class: "date-label" }, label));
 }
 function renderPlanningDashboard() {
-  const projects = scopeProjects("active"), tasks = activeLeaves(), containers = allActiveTasks().length - tasks.length;
+  const projects = scopeProjects("active").filter((p) => !state.typeFilter || profileFor(p.slug).category === state.typeFilter), tasks = activeLeaves(), containers = allActiveTasks().length - tasks.length;
   const statuses = state.board.statuses.map((s) => [s, tasks.filter((t) => t.status === s).length]);
   const types = Object.entries(countBy(projects, (p) => profileFor(p.slug).category)).sort((a, b) => b[1] - a[1]);
   const activeIds = new Set(allActiveTasks().map((t) => t.id));
@@ -1585,7 +1681,7 @@ function renderPlanningDashboard() {
   const logged = recordedSecondsForTasks(activeIds), openTimer = runningTimer();
   const metric = (symbol, value, label, note) => el("div", { class: "planning-metric" }, icon(symbol), el("div", {}, el("strong", {}, String(value)), el("span", {}, label), note ? el("small", {}, note) : null));
   const stats = el("section", { class: "planning-metrics", "aria-label": "Portfolio summary" },
-    metric("folder", projects.length, "Active projects"), metric("list", tasks.filter((t) => t.status !== "done").length, "Open leaf tasks", `${containers} summary containers`),
+    metric("folder", projects.length, "Active projects", hasTaskFilters() ? "Project count uses the type filter" : ""), metric("list", tasks.filter((t) => t.status !== "done").length, "Open leaf tasks", `${containers} summary containers`),
     metric("calendar", tasks.filter((t) => t.status === "todo").length, "Todo work", "Dependencies are checked before execution"),
     metric("clock", logged ? shortDuration(logged) : "No time entries", "Recorded human work", openTimer ? "A human timer is running" : "Estimates are separate"));
   const statusCard = el("section", { class: "workspace-card" }, sectionHead("Current task states", el("span", { class: "denominator" }, `${tasks.length} leaf tasks`)), chartRows(statuses, tasks.length, (status) => filterBoard({ status }), ["var(--teal)", "var(--blue)", "var(--amber)", "var(--purple)", "var(--gray)"]));
@@ -1595,7 +1691,7 @@ function renderPlanningDashboard() {
     ...days.map((day) => { const mine = scheduled.filter((t) => { const p = planFor(t.id); return scheduleOccurs(p, day); });
       return el("div", { class: "agenda-day" }, el("div", { class: "agenda-date" }, el("strong", {}, displayDay(day, { weekday: "short", day: undefined, month: undefined })), el("small", {}, displayDay(day))), el("div", { class: "agenda-tasks" }, ...mine.map((t) => el("div", {}, scheduleTaskButton(t), el("small", {}, planFor(t.id).due_date === day ? "Due date" : "Planned · all day"))), ...(!mine.length ? [el("span", { class: "agenda-empty" }, "—")] : []))); }));
   const timeCard = el("section", { class: "workspace-card time-summary" }, sectionHead("Time tracking"),
-    entries.length ? el("div", { class: "time-total" }, icon("clock"), el("strong", {}, shortDuration(logged)), el("span", {}, "Recorded human effort")) : emptyState("No entries yet", "Estimates and actual time are separate.", null),
+    logged > 0 || entries.length ? el("div", { class: "time-total" }, icon("clock"), el("strong", {}, shortDuration(logged)), el("span", {}, "Recorded human effort")) : emptyState("No entries yet", "Estimates and actual time are separate.", null),
     el("button", { class: "btn primary", onclick: () => showTimeDialog() }, "Add time entry"));
   $("#dashboard").replaceChildren(stats, el("div", { class: "overview-grid" }, el("div", { class: "overview-main" }, el("div", { class: "overview-charts" }, statusCard, typesCard), timelinePanel(true), completionPanel(tasks)), el("div", { class: "overview-side" }, agenda, timeCard)));
 }
@@ -1723,7 +1819,7 @@ async function stopTimer(entry) {
   catch (err) { toast(err.message); }
 }
 function showTimeDialog(task = null) {
-  const options = allActiveTasks();
+  const options = (state.board?.tasks || []).filter((t) => profileFor(t.project).visibility === "active");
   if (task && !options.some((t) => t.id === task.id)) options.push(task);
   if (!options.length) { toast("Create or select a task before recording time."); return; }
   const choice = el("select", { class: "field", name: "task_id", required: true }, ...options.map((t) => el("option", { value: t.id }, `${key(t)} · ${taskTitle(t)}`)));

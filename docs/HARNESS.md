@@ -48,6 +48,9 @@ New tools:
 | update_task_plan | Replace the full structured task plan after reading context |
 | create_subtask | Create a real task under a parent in the same project |
 | update_project_context | Replace the full project brief and selected references |
+| search_tasks | Search full history with shared filters and bounded pagination; active projects by default |
+| list_tags | Reuse exact tag names and full matching-set counts |
+| get_project_context | Read a compact project brief, selected references and status counts |
 
 The matching HTTP routes are GET `/api/harness`, GET/PUT
 `/api/projects/:slug/profile`, GET/PUT `/api/tasks/:id/plan`, GET
@@ -55,6 +58,42 @@ The matching HTTP routes are GET `/api/harness`, GET/PUT
 `/api/tasks/:id/timer`, POST `/api/time/:id/stop`, POST `/api/tasks/:id/time`
 and POST `/api/tasks/:id/accept` (human review). Original task/comment routes remain.
 The Store enforces relationships/readiness/timers for both HTTP and MCP clients.
+
+## Search, filters and tags
+
+The task filter bar combines text, state, project type, exact tag, owner and
+scheduled/unscheduled filters. It persists across portfolio views and resets
+when selecting an individual project. Tags on board cards are clickable; the
+task details tag field suggests existing names. Categories describe projects;
+tags describe tasks. Clearing a filter does not edit task data.
+
+Global search is separate from view filters. It searches full history, including
+completed work, with an explicit Active / Needs review / Inactive / Alias / All
+visibility choice. Active is the default. Results load in pages of 30.
+
+GET `/api/tasks/query` and GET `/api/tags` use the same filters as the MCP
+`search_tasks` and `list_tags` tools:
+
+| Parameter | Meaning |
+| --- | --- |
+| q | Literal search words across key, project name, title, description and tags; at most 300 characters |
+| project | Project slug; omitted or `all` spans projects |
+| status | Exact configured state; omitted or `all` includes all states |
+| category / tag / owner | Exact selected value; tag matching uses normalized native tag names |
+| visibility | `active` (default), `inactive`, `review`, `alias`, or explicit `all` |
+| scheduled | `yes`, `no`, or `all` (default); any start/end/due date counts as scheduled |
+| limit / offset | 1–100 rows (default 30); offset 0–10000 |
+
+Task replies contain `tasks,total,limit,offset,has_more`. Tag replies contain
+`tags:[{tag,count}],total,limit,offset,has_more`; facet counts cover the complete
+matching set before pagination. Selected task payload is checked before loading
+and replies are capped at 1MiB. Tag input is capped at 1MiB / 10000 occurrences;
+tag replies at 64KiB. Narrow the filters when a budget is exceeded.
+GET `/api/projects/:slug/context` returns the same selected project brief as MCP.
+No new database migration, external index or background service is required.
+
+See [the coordinator workflow](COORDINATOR.md) for deduplication, proposed dates,
+subtasks, selected context and the boundary between planning and execution.
 
 Context packets emit explicit selected references. They do not read arbitrary
 local files into replies, ingest all memory, train weights, start background

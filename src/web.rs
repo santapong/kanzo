@@ -127,6 +127,9 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
+        .route("/api/tasks/query", get(query_tasks))
+        .route("/api/tags", get(query_tags))
+        .route("/api/projects/{slug}/context", get(project_context))
         .route("/api/harness", get(harness))
         .route("/api/projects/{slug}/profile", get(project_profile).put(save_project_profile))
         .route("/api/tasks/{id}/plan", get(task_plan).put(save_task_plan))
@@ -416,6 +419,18 @@ struct SearchQuery {
 /// Tasks of every project matching the search, for the search window.
 async fn search(State(home): Shared, Query(q): Query<SearchQuery>) -> Response {
     with_store(home, move |_, s| s.search(&q.q, 30)).await
+}
+
+async fn query_tasks(State(home): Shared, Query(query): Query<store::TaskQuery>) -> Response {
+    with_store(home, move |_, s| s.query_tasks(&query)).await
+}
+
+async fn query_tags(State(home): Shared, Query(query): Query<store::TaskQuery>) -> Response {
+    with_store(home, move |_, s| s.query_tags(&query)).await
+}
+
+async fn project_context(State(home): Shared, Path(slug): Path<String>) -> Response {
+    with_store(home, move |_, s| s.project_context(&slug)).await
 }
 
 #[derive(Deserialize)]

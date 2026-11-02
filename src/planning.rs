@@ -146,6 +146,21 @@ impl Store {
             None => Ok(ProjectProfile::default()),
         }
     }
+    /// Compact intake packet: selected references and counts, never file contents or a task dump.
+    pub fn project_context(&self, slug: &str) -> Result<Value> {
+        let project = self.find_project(slug)?;
+        let profile = self.project_profile(slug)?;
+        let mut stmt = self.conn.prepare("SELECT status,count(*) FROM tasks WHERE project_id=?1 GROUP BY status")?;
+        let counts = stmt
+            .query_map([project.id], |r| Ok((r.get::<_, String>(0)?, Value::from(r.get::<_, i64>(1)?))))?
+            .collect::<rusqlite::Result<Map<String, Value>>>()?;
+        let packet = json!({"project":project,"profile":profile,"task_counts":counts,"references_only":true,
+            "guidance":"Proposed plans are not execution authority. Use search_tasks to select work, get_task_context before editing, and preserve existing plans. Human review owns Done."});
+        if encode(&packet)?.len() > 1024 * 1024 {
+            return Err(invalid("project context exceeds 1MiB; shorten the selected brief"));
+        }
+        Ok(packet)
+    }
     pub fn save_project_profile(&self, slug: &str, mut p: ProjectProfile) -> Result<ProjectProfile> {
         p.category = p.category.trim().to_string();
         if p.category.is_empty() || p.category.len() > 256 || p.category.chars().any(char::is_control) {

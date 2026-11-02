@@ -167,6 +167,12 @@ struct ListTasksArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct ProjectContextArgs {
+    /// Explicit project slug, or omit to infer the current repository (stdio only).
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct TaskArgs {
     /// Like api#12.
     #[schemars(with = "String")]
@@ -311,7 +317,9 @@ impl Kanzo {
                     if !p.repos.is_empty() {
                         let _ = write!(out, " ({})", p.repos.join(", "));
                     }
-                    let _ = write!(out, ": {} open of {}", p.open, p.total);
+                    let profile = store.project_profile(&p.slug)?;
+                    let _ =
+                        write!(out, ": {} open of {} [{} · {}]", p.open, p.total, profile.visibility, profile.category);
                     if here.is_some_and(|h| h.id == p.id) {
                         out.push_str(" <- current repo");
                     }
@@ -319,6 +327,45 @@ impl Kanzo {
                 }
                 out.pop();
                 Ok(out)
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "Search full task history with shared project/status/category/tag/owner/visibility/scheduled filters and bounded pagination. Defaults to active projects, includes Done. Returns JSON tasks,total,limit,offset,has_more. Read-only; human tasks remain for the user."
+    )]
+    async fn search_tasks(&self, Parameters(query): Parameters<store::TaskQuery>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let page = store.query_tasks(&query)?;
+                serde_json::to_string(&page).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "List exact tag names with counts across the full matching task set. Same filters and pagination as search_tasks; active projects by default. Returns JSON tags,total,limit,offset,has_more."
+    )]
+    async fn list_tags(&self, Parameters(query): Parameters<store::TaskQuery>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let page = store.query_tags(&query)?;
+                serde_json::to_string(&page).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .await)
+    }
+
+    #[tool(
+        description = "Get a compact project brief, visibility/category, source/skill/memory references and task status counts for coordinator intake. Does not read referenced files or authorize execution. Use search_tasks then get_task_context for selected work."
+    )]
+    async fn get_project_context(
+        &self,
+        Parameters(args): Parameters<ProjectContextArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |ctx, store| {
+                let project = ctx.project(store, args.project.as_deref())?;
+                serde_json::to_string(&store.project_context(&project.slug)?).map_err(|e| Error::Invalid(e.to_string()))
             })
             .await)
     }

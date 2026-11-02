@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 
 def main():
@@ -131,6 +132,24 @@ def main():
                 assert profile["goal"] in context_text and "skills/review/SKILL.md" in context_text
                 check("native snapshot and selected context references")
 
+                request("PATCH", f"/api/tasks/{child['id']}", {"tags": "Research, UI"})
+                request("PATCH", f"/api/tasks/{parent['id']}", {"tags": "build-ui"})
+                query = urlencode({"project":"demo", "category":"Engineering", "tag":"UI",
+                                   "owner":"worker", "scheduled":"yes", "limit":1})
+                page = request("GET", "/api/tasks/query?" + query)
+                assert page["total"] == 1 and page["tasks"][0]["id"] == child["id"]
+                assert not page["has_more"]
+                all_page = request("GET", "/api/tasks/query?project=demo&limit=1")
+                assert all_page["total"] == 3 and all_page["has_more"]
+                second_page = request("GET", "/api/tasks/query?project=demo&limit=1&offset=1")
+                assert all_page["tasks"][0]["id"] != second_page["tasks"][0]["id"]
+                facet = request("GET", "/api/tags?project=demo&tag=ui")
+                assert {row["tag"] for row in facet["tags"]} == {"ui", "research"}
+                assert request("GET", "/api/projects/demo/context")["references_only"]
+                for bad in ["limit=0", "offset=10001", "status=missing", "visibility=invalid", "tag=a%2Cb"]:
+                    request("GET", "/api/tasks/query?" + bad, expected=400)
+                check("shared discovery filters, exact tags, full-history pagination and validation")
+
                 mcp_headers = {"Accept": "application/json, text/event-stream"}
                 def mcp(method, params, number):
                     data, h = request("POST", "/mcp", {"jsonrpc": "2.0", "id": number,
@@ -147,9 +166,18 @@ def main():
                                     "clientInfo": {"name": "kanzo-acceptance", "version": "1"}}, 1)
                 assert "result" in initialized
                 tools = mcp("tools/list", {}, 2)["result"]["tools"]
-                assert {"get_task_context", "update_task_plan", "create_subtask"} <= {t["name"] for t in tools}
+                assert {"get_task_context", "update_task_plan", "create_subtask", "search_tasks", "list_tags", "get_project_context"} <= {t["name"] for t in tools}
                 packet = mcp("tools/call", {"name": "get_task_context", "arguments": {"id": f"demo#{child['id']}"}}, 3)
                 assert not packet["result"].get("isError") and profile["goal"] in json.dumps(packet)
+                result = mcp("tools/call", {"name":"search_tasks", "arguments":{"project":"demo","tag":"ui","limit":1}},4)["result"]
+                assert not result.get("isError")
+                assert json.loads(result["content"][0]["text"])["tasks"][0]["id"] == child["id"]
+                result = mcp("tools/call", {"name":"list_tags", "arguments":{"project":"demo","tag":"ui"}},5)["result"]
+                assert json.loads(result["content"][0]["text"])["total"] == 2
+                result = mcp("tools/call", {"name":"get_project_context", "arguments":{"project":"demo"}},6)["result"]
+                assert json.loads(result["content"][0]["text"])["profile"]["goal"] == profile["goal"]
+                result = mcp("tools/call", {"name":"search_tasks", "arguments":{"limit":101}},7)["result"]
+                assert result.get("isError")
                 check("native HTTP MCP initialization, discovery and context tool")
 
                 request("GET", "/api/harness", expected=403, headers={"Origin": "https://outside.example"}, raw=True)

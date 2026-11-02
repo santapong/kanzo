@@ -806,6 +806,38 @@ body.detail-open main { visibility:hidden; }
 }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important;transition:none!important;animation:none!important; } }
 
+
+/* Task discovery extends the selected workspace without changing task records. */
+.task-filters { padding:0 28px 17px;flex-shrink:0;display:flex;flex-direction:column;gap:11px; }
+.task-filter-row { display:flex;align-items:center;flex-wrap:wrap;gap:9px;min-width:0; }
+.task-query { flex:1;min-width:220px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:7px;padding:0 10px;background:var(--field);color:var(--muted); }
+.task-query .field { width:100%;min-width:0;border:0;background:transparent;padding:10px 0;font-size:12px; }
+.task-filter-row>.btn { font-size:12px; }
+.task-filter-selects>label { flex:1;min-width:115px;max-width:260px;display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted); }
+.task-filter-selects select.field { width:100%;min-width:0;border:1px solid var(--border);border-radius:6px;background:var(--field);font-size:12px;padding:7px 22px 7px 8px;color:var(--text);text-overflow:ellipsis; }
+.task-filter-summary { display:flex;align-items:center;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);min-height:18px; }
+.filter-chips { display:flex;flex-wrap:wrap;gap:6px;min-width:0; }
+.filter-chips .filter-chip { max-width:100%;overflow-wrap:anywhere;font-size:11px; }
+.filter-empty { display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 28px 16px;padding:11px 14px;border:1px solid var(--border);border-radius:7px;background:var(--card);font-size:12px;flex-shrink:0; }
+.card button.tag { cursor:pointer;color:var(--muted);border:1px solid var(--border); }
+.card button.tag:hover { color:var(--accent);border-color:var(--accent); }
+.search-toolbar { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px 0; }
+.search-toolbar label { display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted); }
+.search-toolbar select { border:1px solid var(--border);border-radius:5px;padding:6px 26px 6px 8px;background:var(--field);color:var(--text); }
+.search-toolbar .ghost { width:auto;font-size:22px; }
+.search-summary { color:var(--muted);font-size:11px;padding:0 18px;margin:8px 0; }
+.search-more { margin:10px 18px 14px;font-size:12px; }
+@media(max-width:900px) { .task-filters { padding:0 20px 16px; } .filter-empty { margin:0 20px 16px; } }
+@media(max-width:680px) {
+  .task-filters { padding:0 12px 13px;gap:8px;max-height:38vh;overflow-y:auto; }
+  .task-query { flex-basis:100%;min-width:0; }
+  .task-filter-selects { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px; }
+  .task-filter-selects>label { min-width:0;max-width:none; }
+  .task-filter-selects>label>span { min-width:30px; }
+  .filter-empty { margin:0 12px 13px;flex-wrap:wrap; }
+  .search-window { width:calc(100vw - 24px);max-width:100%; }
+}
+
 </style>
 </head>
 <body>
@@ -832,6 +864,22 @@ body.detail-open main { visibility:hidden; }
     <div id="timer-indicator"></div>
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
+  <section class="task-filters" id="task-filters" aria-label="Task filters">
+    <div class="task-filter-row">
+      <label class="task-query"><span class="icon" data-icon="search"></span><span class="sr-only">Filter tasks by text</span><input class="field" id="task-query" type="search" maxlength="300" placeholder="Filter tasks by title, description, tag or ID…" autocomplete="off"></label>
+      <button class="btn quiet" id="task-search-open" title="Search every task, including completed work">Search all tasks</button>
+      <button class="btn quiet" id="filters-clear">Clear filters</button>
+    </div>
+    <div class="task-filter-row task-filter-selects">
+      <label><span>State</span><select class="field" id="filter-status" aria-label="Filter by state"></select></label>
+      <label><span>Type</span><select class="field" id="filter-type" aria-label="Filter by project type"></select></label>
+      <label><span>Tag</span><select class="field" id="filter-tag" aria-label="Filter by tag"></select></label>
+      <label><span>Owner</span><select class="field" id="filter-owner" aria-label="Filter by owner"></select></label>
+      <label><span>Dates</span><select class="field" id="filter-schedule" aria-label="Filter by schedule"><option value="">All dates</option><option value="yes">Scheduled</option><option value="no">Unscheduled</option></select></label>
+    </div>
+    <div class="task-filter-summary"><span id="filter-count" role="status" aria-live="polite"></span><div id="filter-chips" class="filter-chips"></div></div>
+  </section>
+  <div id="filter-empty" class="filter-empty" hidden><span>No tasks match these filters.</span><button class="text-button" id="filter-empty-clear">Clear all filters</button></div>
   <div id="project-notice" class="project-notice" hidden></div>
   <section class="dashboard" id="dashboard" aria-label="Active portfolio summary" hidden></section>
   <div class="columns" id="columns"></div>
@@ -857,7 +905,7 @@ body.detail-open main { visibility:hidden; }
         <div class="brief-preview" id="task-project-brief"></div>
         <div class="section"><h3>Task description</h3><textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Describe the work (Markdown)"></textarea><div class="inline md desc-view" id="p-desc-view" tabindex="0" role="button" aria-label="Edit description" hidden></div><div class="thumbs" id="p-images"></div></div>
         <div id="task-plan-editor"></div>
-        <div class="props compact-props">Tags <span><input class="inline" id="p-tags" placeholder="Add tags" autocomplete="off" spellcheck="false"></span>Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>Created <span id="p-created"></span>Updated <span id="p-updated"></span></div>
+        <div class="props compact-props">Tags <span><input class="inline" id="p-tags" list="tag-suggestions" aria-label="Task tags, separated by commas" placeholder="Add tags, separated by commas" autocomplete="off" spellcheck="false"></span>Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>Created <span id="p-created"></span>Updated <span id="p-updated"></span></div>
         <div id="task-acceptance"></div>
         <div class="section"><h3>Comments <span class="count" id="p-comment-count"></span></h3><div id="p-comments"></div><form class="composer" id="p-comment-form"><div class="thumbs" id="p-pending"></div><textarea id="p-comment" rows="2" placeholder="Add a comment" aria-label="Add a comment"></textarea><button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button></form></div>
       </section>
@@ -921,10 +969,14 @@ body.detail-open main { visibility:hidden; }
     </div>
   </form>
 </div>
+<datalist id="tag-suggestions"></datalist>
 <div class="search-dialog" id="search-dialog" hidden>
   <div class="search-window" role="dialog" aria-label="Search tasks">
-    <label class="search-field"><span class="icon" data-icon="search"></span><input id="search" type="search" placeholder="Search tasks" autocomplete="off" spellcheck="false" aria-label="Search tasks"></label>
+    <label class="search-field"><span class="icon" data-icon="search"></span><input id="search" type="search" placeholder="Search all tasks by title, description, tag or ID" maxlength="300" autocomplete="off" spellcheck="false" aria-label="Search tasks"></label>
+    <div class="search-toolbar"><label>Projects <select class="field" id="search-scope" aria-label="Search project visibility"><option value="active">Active</option><option value="review">Needs review</option><option value="inactive">Inactive</option><option value="alias">Aliases</option><option value="all">All projects</option></select></label><button class="ghost" id="search-close" aria-label="Close search">×</button></div>
+    <p id="search-summary" class="search-summary" role="status" aria-live="polite"></p>
     <div class="results" id="search-results"></div>
+    <button class="btn quiet search-more" id="search-more" hidden>Load more results</button>
   </div>
 </div>
 

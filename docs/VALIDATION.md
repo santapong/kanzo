@@ -35,3 +35,23 @@ Observed QA failures were retained in private receipts, diagnosed and corrected;
 the passing candidate was rebuilt after the final asset changes. These checks do
 not establish Windows/macOS qualification, a production security certification,
 remote CI success, unattended agent execution, or a causal learning benefit.
+
+## Discovery and coordinator follow-up — 2 November 2026
+
+The `0.3.0-harness.2` candidate passed formatting, Clippy with warnings denied,
+44 native tests and eight synthetic HTTP/MCP groups against its release binary.
+Added coverage includes combined filters before pagination, complete task
+history, exact punctuation/quoted/backslash/multiword tags, missing-profile
+review defaults, invalid parameters and payload/tag input-budget rejection.
+
+Selected real browser flows on a disposable private board copy covered compound
+filters, empty-results recovery, calendar filter persistence, paginated global
+search, explicit visibility, keyboard selection and saved/clickable tags.
+Light/dark and390/768/1440 layouts were inspected. The phone filter/search
+surfaces stayed within the viewport. Debounced search invalidates old selectable
+results immediately; assertions wait for the requested result state.
+
+No schema or dependency-version migration was added. Private planning records
+and proposed dates are owner data, excluded from this public repository. The
+checks retain the single-owner/loopback boundary and human acceptance rules;
+they are not an authenticated multi-user or complete security qualification.

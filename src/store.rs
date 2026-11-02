@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// The oldest schema version whose Kanzo can still use a database at the latest one.
 /// Adding a table or a column with a default leaves older versions working, so a board
@@ -151,6 +152,54 @@ pub struct Image {
     pub comment_id: Option<i64>,
     /// Its file name in the data folder's `images/`, like `6fec521a01297ab5.png`.
     pub file: String,
+}
+
+/// Shared discovery filters for the browser and MCP. Filters are applied before pagination.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct TaskQuery {
+    /// Literal words in task key, title, description, tags or project name (max 300 characters).
+    pub q: Option<String>,
+    /// Project slug, or all (default).
+    pub project: Option<String>,
+    /// One task status, or all (default, includes Done).
+    pub status: Option<String>,
+    /// Exact project category.
+    pub category: Option<String>,
+    /// One exact tag, case-insensitive.
+    pub tag: Option<String>,
+    /// Exact task-plan owner.
+    pub owner: Option<String>,
+    /// active (default), inactive, review, alias or all.
+    pub visibility: Option<String>,
+    /// yes, no or all (default): whether any planning date is set.
+    pub scheduled: Option<String>,
+    /// Page size 1–100, default 30.
+    pub limit: Option<usize>,
+    /// Offset 0–10000, default 0.
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskPage {
+    pub tasks: Vec<Task>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+}
+#[derive(Debug, Serialize)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
+}
+#[derive(Debug, Serialize)]
+pub struct TagPage {
+    pub tags: Vec<TagCount>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
 }
 
 /// Fields of a task to change; `None` leaves a field as it is.
@@ -573,6 +622,166 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), Self::task_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Build one parameterized predicate used by task discovery and tag facets.
+    fn discovery_filter(&self, query: &TaskQuery) -> Result<(String, Vec<String>, usize, usize)> {
+        let limit = query.limit.unwrap_or(30);
+        let offset = query.offset.unwrap_or(0);
+        if !(1..=100).contains(&limit) || offset > 10_000 {
+            return Err(Error::Invalid("limit must be 1–100 and offset 0–10000".into()));
+        }
+        let q = query.q.as_deref().unwrap_or("");
+        if q.chars().count() > 300 || q.chars().any(char::is_control) {
+            return Err(Error::Invalid("query must be at most 300 characters without controls".into()));
+        }
+        let mut sql = String::from(" WHERE 1");
+        let mut values = Vec::new();
+        let mut clause = |expression: &str, value: String| {
+            values.push(value);
+            sql.push_str(&format!(" AND {expression} ?{}", values.len()));
+        };
+        let visibility = query.visibility.as_deref().unwrap_or("active").trim();
+        if !["active", "inactive", "review", "alias", "all"].contains(&visibility) {
+            return Err(Error::Invalid("visibility must be active, inactive, review, alias or all".into()));
+        }
+        if visibility != "all" {
+            clause("coalesce(json_extract(pp.profile_json,'$.visibility'),'review') =", visibility.into());
+        }
+        for (name, field, value) in [
+            ("project", "p.slug =", &query.project),
+            (
+                "category",
+                "coalesce(json_extract(pp.profile_json,'$.category'),'Needs classification') =",
+                &query.category,
+            ),
+            ("owner", "coalesce(json_extract(tp.plan_json,'$.owner'),'') =", &query.owner),
+        ] {
+            if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                if value.chars().count() > 256 || value.chars().any(char::is_control) {
+                    return Err(Error::Invalid(format!("{name} must be at most 256 characters without controls")));
+                }
+                if name != "project" || value != "all" {
+                    clause(field, if name == "project" { value.to_ascii_lowercase() } else { value.into() });
+                }
+            }
+        }
+        if let Some(status) = query.status.as_deref().map(str::trim).filter(|v| !v.is_empty() && *v != "all") {
+            if !self.statuses.iter().any(|s| s == status) {
+                return Err(Error::Invalid(format!("unknown status {status:?}")));
+            }
+            clause("t.status =", status.into());
+        }
+        if let Some(tag) = query.tag.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            let tags = clean_tags(tag);
+            if tags.len() != 1 || tag.contains(',') || tag.chars().count() > 256 || tag.chars().any(char::is_control) {
+                return Err(Error::Invalid(
+                    "tag must be one tag of at most 256 characters without controls or commas".into(),
+                ));
+            }
+            // instr is literal: %, _ and backslashes in tags have no wildcard semantics.
+            clause("instr(',' || t.tags || ',',", format!(",{},", tags[0]));
+            // The generic helper appends one parameter; finish this scalar expression.
+            sql.push_str(") > 0");
+        }
+        let scheduled = query.scheduled.as_deref().unwrap_or("all").trim();
+        if !["all", "yes", "no"].contains(&scheduled) {
+            return Err(Error::Invalid("scheduled must be yes, no or all".into()));
+        }
+        if scheduled != "all" {
+            sql.push_str(if scheduled == "yes" { " AND (" } else { " AND NOT (" });
+            sql.push_str("coalesce(json_extract(tp.plan_json,'$.planned_start'),'') <> '' OR coalesce(json_extract(tp.plan_json,'$.planned_end'),'') <> '' OR coalesce(json_extract(tp.plan_json,'$.due_date'),'') <> '')");
+        }
+        for word in q.split_whitespace() {
+            let escaped = word.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            values.push(format!("%{escaped}%"));
+            sql.push_str(&format!(" AND lower(p.slug || '#' || t.id || ' ' || p.name || ' ' || t.title || ' ' || t.description || ' ' || t.tags) LIKE ?{} ESCAPE '\\'", values.len()));
+        }
+        Ok((sql, values, limit, offset))
+    }
+
+    pub fn query_tasks(&self, query: &TaskQuery) -> Result<TaskPage> {
+        let (filter, mut values, limit, offset) = self.discovery_filter(query)?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let joins = " LEFT JOIN project_profiles pp ON pp.project_id=p.id LEFT JOIN task_plans tp ON tp.task_id=t.id";
+        let total: i64 = self.conn.query_row(
+            &format!("SELECT count(*) FROM tasks t JOIN projects p ON p.id=t.project_id{joins}{filter}"),
+            rusqlite::params_from_iter(values.iter()),
+            |r| r.get(0),
+        )?;
+        let total =
+            usize::try_from(total).map_err(|_| Error::Invalid("task count exceeds platform capacity".into()))?;
+        let order = format!(
+            " ORDER BY t.status=?{},t.updated_at DESC,t.id DESC LIMIT {limit} OFFSET {offset}",
+            values.len() + 1
+        );
+        values.push(self.done_status().into());
+        // Inspect selected payload sizes in SQL before materializing user-controlled text.
+        // A read transaction holds the same snapshot through preflight/count/page.
+        let bytes: i64 = self.conn.query_row(
+            &format!("SELECT coalesce(sum(bytes),0) FROM (SELECT length(CAST(t.title || t.description || t.tags || p.slug || t.created_at || t.updated_at || t.status AS BLOB)) AS bytes FROM tasks t JOIN projects p ON p.id=t.project_id{joins}{filter}{order})"),
+            rusqlite::params_from_iter(values.iter()), |r|r.get(0),
+        )?;
+        if bytes > 1024 * 1024 {
+            return Err(Error::Invalid(
+                "search page stored payload exceeds 1MiB; reduce limit or narrow filters".into(),
+            ));
+        }
+        let sql = format!("{}{joins}{filter}{order}", Self::TASK_SELECT);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let tasks = stmt
+            .query_map(rusqlite::params_from_iter(values.iter()), Self::task_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let page = TaskPage { has_more: offset.saturating_add(tasks.len()) < total, tasks, total, limit, offset };
+        if serde_json::to_vec(&page).map_err(|e| Error::Invalid(e.to_string()))?.len() > 1024 * 1024 {
+            return Err(Error::Invalid("search page exceeds 1MiB; reduce limit or narrow filters".into()));
+        }
+        transaction.commit()?;
+        Ok(page)
+    }
+
+    /// Tag counts use the full matching set, not only the current task result page.
+    pub fn query_tags(&self, query: &TaskQuery) -> Result<TagPage> {
+        let (filter, values, limit, offset) = self.discovery_filter(query)?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let matching = format!(
+            "SELECT t.tags FROM tasks t JOIN projects p ON p.id=t.project_id LEFT JOIN project_profiles pp ON pp.project_id=p.id LEFT JOIN task_plans tp ON tp.task_id=t.id{filter}"
+        );
+        // Bound facet input before building all facets; narrow filters
+        // rather than silently reporting counts from a truncated task window.
+        let (bytes, tag_count): (i64,i64) = self.conn.query_row(
+            &format!("SELECT coalesce(sum(length(CAST(tags AS BLOB))),0),coalesce(sum(CASE WHEN tags='' THEN 0 ELSE length(tags)-length(replace(tags,',',''))+1 END),0) FROM ({matching})"),
+            rusqlite::params_from_iter(values.iter()), |r|Ok((r.get(0)?,r.get(1)?)),
+        )?;
+        if bytes > 1024 * 1024 || tag_count > 10_000 {
+            return Err(Error::Invalid("tag facet input exceeds 1MiB or 10000 tag occurrences; narrow filters".into()));
+        }
+        // json_quote escapes literal quotes/backslashes before separators become
+        // JSON array boundaries. json_each parses once instead of repeatedly
+        // copying a shrinking suffix for every tag.
+        let cte = format!(
+            r#"WITH matching(tags) AS ({matching}), counts AS (SELECT j.value AS tag,count(*) AS count FROM matching m,json_each('[' || replace(json_quote(m.tags), ',', '","') || ']') j WHERE j.value <> '' GROUP BY j.value)"#
+        );
+        let total: i64 = self.conn.query_row(
+            &format!("{cte} SELECT count(*) FROM counts"),
+            rusqlite::params_from_iter(values.iter()),
+            |r| r.get(0),
+        )?;
+        let total = usize::try_from(total).map_err(|_| Error::Invalid("tag count exceeds platform capacity".into()))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "{cte} SELECT tag,count FROM counts ORDER BY count DESC,tag LIMIT {limit} OFFSET {offset}"
+        ))?;
+        let tags = stmt
+            .query_map(rusqlite::params_from_iter(values.iter()), |r| {
+                Ok(TagCount { tag: r.get(0)?, count: r.get::<_, i64>(1)? as usize })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let page = TagPage { has_more: offset.saturating_add(tags.len()) < total, tags, total, limit, offset };
+        if serde_json::to_vec(&page).map_err(|e| Error::Invalid(e.to_string()))?.len() > 64 * 1024 {
+            return Err(Error::Invalid("tag page exceeds 64KiB; reduce limit or narrow filters".into()));
+        }
+        transaction.commit()?;
+        Ok(page)
     }
 
     pub fn get_task(&self, id: i64) -> Result<Task> {
@@ -1176,6 +1385,151 @@ mod tests {
         assert!(titles("nothing-like-this").is_empty());
         assert_eq!(s.search("", 10).unwrap().len(), 3, "no words: the latest changes");
         assert_eq!(s.search("login", 1).unwrap()[0].id, login.id);
+    }
+
+    #[test]
+    fn discovery_combines_filters_before_paging_and_keeps_done_history() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "Control Plane", None).unwrap();
+        let archived = s.create_project("archived", "Old", None).unwrap();
+        let mut profile = s.project_profile("api").unwrap();
+        profile.category = "Engineering".into();
+        s.save_project_profile("api", profile).unwrap();
+        let mut profile = s.project_profile("archived").unwrap();
+        profile.visibility = "inactive".into();
+        s.save_project_profile("archived", profile).unwrap();
+        let target = s.create_task(api.id, "Review 100%_done", "Literal scope").unwrap();
+        s.update_task(target.id, TaskPatch { tags: Some("UI, review, 100%_tag".into()), ..Default::default() })
+            .unwrap();
+        s.save_task_plan(
+            target.id,
+            crate::planning::TaskPlan {
+                owner: "Coordinator".into(),
+                due_date: Some("2026-11-05".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.update_task(target.id, TaskPatch { status: Some("done".into()), ..Default::default() }).unwrap();
+        let second = s.create_task(api.id, "Later unrelated", "").unwrap();
+        s.update_task(second.id, TaskPatch { tags: Some("build-ui".into()), ..Default::default() }).unwrap();
+        s.create_task(archived.id, "Review archived", "").unwrap();
+        let query = TaskQuery {
+            q: Some("Control Plane 100%_done".into()),
+            project: Some("api".into()),
+            status: Some("done".into()),
+            category: Some("Engineering".into()),
+            tag: Some("UI".into()),
+            owner: Some("Coordinator".into()),
+            scheduled: Some("yes".into()),
+            limit: Some(1),
+            ..Default::default()
+        };
+        let page = s.query_tasks(&query).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.tasks[0].id, target.id);
+        assert!(!page.has_more);
+        let page = s.query_tasks(&TaskQuery { limit: Some(1), ..Default::default() }).unwrap();
+        assert_eq!((page.total, page.tasks.len(), page.has_more), (2, 1, true));
+        let next = s.query_tasks(&TaskQuery { limit: Some(1), offset: Some(1), ..Default::default() }).unwrap();
+        assert_eq!(next.tasks[0].id, target.id);
+        assert!(!next.has_more);
+        assert_eq!(
+            s.query_tasks(&TaskQuery { visibility: Some("all".into()), ..Default::default() }).unwrap().total,
+            3
+        );
+        assert_eq!(
+            s.query_tasks(&TaskQuery { visibility: Some("inactive".into()), ..Default::default() }).unwrap().total,
+            1
+        );
+        assert_eq!(
+            s.query_tasks(&TaskQuery { scheduled: Some("no".into()), ..Default::default() }).unwrap().tasks[0].id,
+            second.id
+        );
+        assert_eq!(
+            s.query_tasks(&TaskQuery { tag: Some("ui".into()), ..Default::default() }).unwrap().total,
+            1,
+            "exact tags, no substring matching"
+        );
+        assert_eq!(
+            s.query_tasks(&TaskQuery { tag: Some("100%_tag".into()), ..Default::default() }).unwrap().total,
+            1,
+            "literal tag punctuation"
+        );
+        assert_eq!(
+            s.query_tasks(&TaskQuery { q: Some("100%_tag".into()), ..Default::default() }).unwrap().total,
+            1,
+            "literal LIKE punctuation"
+        );
+        let tags = s.query_tags(&TaskQuery { limit: Some(1), ..Default::default() }).unwrap();
+        assert_eq!((tags.total, tags.tags.len(), tags.has_more), (4, 1, true));
+        let tags = s.query_tags(&TaskQuery { tag: Some("ui".into()), ..Default::default() }).unwrap();
+        assert_eq!(tags.total, 3);
+        assert!(tags.tags.iter().all(|t| t.count == 1));
+        assert_eq!(s.project_context("api").unwrap()["task_counts"]["done"], 1);
+        assert_eq!(s.project_context("api").unwrap()["references_only"], true);
+    }
+
+    #[test]
+    fn discovery_validates_parameters_and_defaults_missing_profiles_to_review() {
+        let (_dir, s) = store();
+        let p = s.create_project("legacy", "Legacy", None).unwrap();
+        s.create_task(p.id, "Review source", "").unwrap();
+        s.conn.execute("DELETE FROM project_profiles WHERE project_id=?1", [p.id]).unwrap();
+        assert_eq!(s.query_tasks(&TaskQuery::default()).unwrap().total, 0);
+        assert_eq!(
+            s.query_tasks(&TaskQuery { visibility: Some("review".into()), ..Default::default() }).unwrap().total,
+            1
+        );
+        for query in [
+            TaskQuery { limit: Some(0), ..Default::default() },
+            TaskQuery { limit: Some(101), ..Default::default() },
+            TaskQuery { offset: Some(10001), ..Default::default() },
+            TaskQuery { visibility: Some("invalid".into()), ..Default::default() },
+            TaskQuery { scheduled: Some("tomorrow".into()), ..Default::default() },
+            TaskQuery { status: Some("missing".into()), ..Default::default() },
+            TaskQuery { tag: Some("a,b".into()), ..Default::default() },
+            TaskQuery { q: Some("x".repeat(301)), ..Default::default() },
+        ] {
+            assert!(s.query_tasks(&query).is_err());
+            assert!(s.query_tags(&query).is_err());
+        }
+    }
+
+    #[test]
+    fn discovery_tag_facets_preserve_quotes_backslashes_and_multiword_names() {
+        let (_dir, s) = store();
+        let project = s.create_project("tags", "", None).unwrap();
+        let task = s.create_task(project.id, "Escaped tags", "").unwrap();
+        s.update_task(
+            task.id,
+            TaskPatch { tags: Some(r#"quote"tag, back\slash, needs review"#.into()), ..Default::default() },
+        )
+        .unwrap();
+        let page = s.query_tags(&TaskQuery::default()).unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(
+            page.tags.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>(),
+            [r"back\slash", "needs review", r#"quote"tag"#]
+        );
+        assert!(page.tags.iter().all(|t| t.count == 1));
+        for tag in [r#"quote"tag"#, r"back\slash", "needs review"] {
+            let filter = TaskQuery { tag: Some(tag.into()), ..Default::default() };
+            assert_eq!(s.query_tags(&filter).unwrap().total, 3);
+            assert_eq!(s.query_tasks(&filter).unwrap().tasks[0].id, task.id);
+        }
+    }
+
+    #[test]
+    fn discovery_rejects_oversized_selected_payload_and_tag_expansion() {
+        let (_dir, s) = store();
+        let project = s.create_project("oversize", "", None).unwrap();
+        s.create_task(project.id, "Large context", &"x".repeat(1024 * 1024 + 1)).unwrap();
+        assert!(s.query_tasks(&TaskQuery::default()).unwrap_err().to_string().contains("stored payload"));
+        let task = s.create_task(project.id, "Many tags", "").unwrap();
+        // Synthetic boundary avoids the normal deduplication work in clean_tags.
+        s.conn.execute("UPDATE tasks SET tags=?1 WHERE id=?2", params!["a,".repeat(10_001), task.id]).unwrap();
+        assert!(s.query_tags(&TaskQuery::default()).unwrap_err().to_string().contains("tag facet input"));
     }
 
     #[test]
